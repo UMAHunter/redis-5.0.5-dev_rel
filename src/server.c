@@ -124,8 +124,8 @@ volatile unsigned long lru_clock; /* Server global current LRU time. */
  *    Note that commands that may trigger a DEL as a side effect (like SET)
  *    are not fast commands.
  */
-struct redisCommand redisCommandTable[] = {
-    {"module",moduleCommand,-2,"as",0,NULL,0,0,0,0,0},
+/*struct redisCommand redisCommandTable[] = {
+    {"module",moduleCommand,-2,"admin no-script",0,NULL,0,0,0,0,0,0},
     {"get",getCommand,2,"rF",0,NULL,1,1,1,0,0},
     {"set",setCommand,-3,"wm",0,NULL,1,1,1,0,0},
     {"setnx",setnxCommand,3,"wmF",0,NULL,1,1,1,0,0},
@@ -324,7 +324,835 @@ struct redisCommand redisCommandTable[] = {
     {"post",securityWarningCommand,-1,"lt",0,NULL,0,0,0,0,0},
     {"host:",securityWarningCommand,-1,"lt",0,NULL,0,0,0,0,0},
     {"latency",latencyCommand,-2,"aslt",0,NULL,0,0,0,0,0},
-    {"lolwut",lolwutCommand,-1,"r",0,NULL,0,0,0,0,0}
+    {"lolwut",lolwutCommand,-1,"r",0,NULL,0,0,0,0,0},
+
+    {"acl",aclCommand,-2,
+     "admin no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0}
+
+};*/
+struct redisCommand redisCommandTable[] = {
+    {"module",moduleCommand,-2,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"get",getCommand,2,
+     "read-only fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    /* Note that we can't flag set as fast, since it may perform an
+ *      * implicit DEL of a large key. */
+    {"set",setCommand,-3,
+     "write use-memory @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"setnx",setnxCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"setex",setexCommand,4,
+     "write use-memory @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"psetex",psetexCommand,4,
+     "write use-memory @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"append",appendCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"strlen",strlenCommand,2,
+     "read-only fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"del",delCommand,-2,
+     "write @keyspace",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"unlink",unlinkCommand,-2,
+     "write fast @keyspace",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"exists",existsCommand,-2,
+     "read-only fast @keyspace",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"setbit",setbitCommand,4,
+     "write use-memory @bitmap",
+     0,NULL,1,1,1,0,0,0},
+
+    {"getbit",getbitCommand,3,
+     "read-only fast @bitmap",
+     0,NULL,1,1,1,0,0,0},
+
+    {"bitfield",bitfieldCommand,-2,
+     "write use-memory @bitmap",
+     0,NULL,1,1,1,0,0,0},
+
+    {"setrange",setrangeCommand,4,
+     "write use-memory @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"getrange",getrangeCommand,4,
+     "read-only @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"substr",getrangeCommand,4,
+     "read-only @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"incr",incrCommand,2,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"decr",decrCommand,2,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"mget",mgetCommand,-2,
+     "read-only fast @string",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"rpush",rpushCommand,-3,
+     "write use-memory fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lpush",lpushCommand,-3,
+     "write use-memory fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"rpushx",rpushxCommand,-3,
+     "write use-memory fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lpushx",lpushxCommand,-3,
+     "write use-memory fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"linsert",linsertCommand,5,
+     "write use-memory @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"rpop",rpopCommand,2,
+     "write fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lpop",lpopCommand,2,
+     "write fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"brpop",brpopCommand,-3,
+     "write no-script @list @blocking",
+     0,NULL,1,-2,1,0,0,0},
+
+    {"brpoplpush",brpoplpushCommand,4,
+     "write use-memory no-script @list @blocking",
+     0,NULL,1,2,1,0,0,0},
+
+    {"blpop",blpopCommand,-3,
+     "write no-script @list @blocking",
+     0,NULL,1,-2,1,0,0,0},
+
+    {"llen",llenCommand,2,
+     "read-only fast @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lindex",lindexCommand,3,
+     "read-only @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lset",lsetCommand,4,
+     "write use-memory @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lrange",lrangeCommand,4,
+     "read-only @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"ltrim",ltrimCommand,4,
+     "write @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"lrem",lremCommand,4,
+     "write @list",
+     0,NULL,1,1,1,0,0,0},
+
+    {"rpoplpush",rpoplpushCommand,3,
+     "write use-memory @list",
+     0,NULL,1,2,1,0,0,0},
+
+    {"sadd",saddCommand,-3,
+     "write use-memory fast @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"srem",sremCommand,-3,
+     "write fast @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"smove",smoveCommand,4,
+     "write fast @set",
+     0,NULL,1,2,1,0,0,0},
+
+    {"sismember",sismemberCommand,3,
+     "read-only fast @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"scard",scardCommand,2,
+     "read-only fast @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"spop",spopCommand,-2,
+     "write random fast @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"srandmember",srandmemberCommand,-2,
+     "read-only random @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"sinter",sinterCommand,-2,
+     "read-only to-sort @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"sinterstore",sinterstoreCommand,-3,
+     "write use-memory @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"sunion",sunionCommand,-2,
+     "read-only to-sort @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"sunionstore",sunionstoreCommand,-3,
+     "write use-memory @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"sdiff",sdiffCommand,-2,
+     "read-only to-sort @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"sdiffstore",sdiffstoreCommand,-3,
+     "write use-memory @set",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"smembers",sinterCommand,2,
+     "read-only to-sort @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"sscan",sscanCommand,-3,
+     "read-only random @set",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zadd",zaddCommand,-4,
+     "write use-memory fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zincrby",zincrbyCommand,4,
+     "write use-memory fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrem",zremCommand,-3,
+     "write fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zremrangebyscore",zremrangebyscoreCommand,4,
+     "write @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zremrangebyrank",zremrangebyrankCommand,4,
+     "write @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zremrangebylex",zremrangebylexCommand,4,
+     "write @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zunionstore",zunionstoreCommand,-4,
+     "write use-memory @sortedset",
+     0,zunionInterGetKeys,0,0,0,0,0,0},
+
+    {"zinterstore",zinterstoreCommand,-4,
+     "write use-memory @sortedset",
+     0,zunionInterGetKeys,0,0,0,0,0,0},
+
+    {"zrange",zrangeCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrangebyscore",zrangebyscoreCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrevrangebyscore",zrevrangebyscoreCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrangebylex",zrangebylexCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrevrangebylex",zrevrangebylexCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zcount",zcountCommand,4,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zlexcount",zlexcountCommand,4,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrevrange",zrevrangeCommand,-4,
+     "read-only @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zcard",zcardCommand,2,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zscore",zscoreCommand,3,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrank",zrankCommand,3,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zrevrank",zrevrankCommand,3,
+     "read-only fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zscan",zscanCommand,-3,
+     "read-only random @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zpopmin",zpopminCommand,-2,
+     "write fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"zpopmax",zpopmaxCommand,-2,
+     "write fast @sortedset",
+     0,NULL,1,1,1,0,0,0},
+
+    {"bzpopmin",bzpopminCommand,-3,
+     "write no-script fast @sortedset @blocking",
+     0,NULL,1,-2,1,0,0,0},
+
+    {"bzpopmax",bzpopmaxCommand,-3,
+     "write no-script fast @sortedset @blocking",
+     0,NULL,1,-2,1,0,0,0},
+
+    {"hset",hsetCommand,-4,
+     "write use-memory fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hsetnx",hsetnxCommand,4,
+     "write use-memory fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hget",hgetCommand,3,
+     "read-only fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hmset",hsetCommand,-4,
+     "write use-memory fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hmget",hmgetCommand,-3,
+     "read-only fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hincrby",hincrbyCommand,4,
+     "write use-memory fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hincrbyfloat",hincrbyfloatCommand,4,
+     "write use-memory fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hdel",hdelCommand,-3,
+     "write fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hlen",hlenCommand,2,
+     "read-only fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hstrlen",hstrlenCommand,3,
+     "read-only fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hkeys",hkeysCommand,2,
+     "read-only to-sort @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hvals",hvalsCommand,2,
+     "read-only to-sort @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hgetall",hgetallCommand,2,
+     "read-only random @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hexists",hexistsCommand,3,
+     "read-only fast @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"hscan",hscanCommand,-3,
+     "read-only random @hash",
+     0,NULL,1,1,1,0,0,0},
+
+    {"incrby",incrbyCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"decrby",decrbyCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"incrbyfloat",incrbyfloatCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"getset",getsetCommand,3,
+     "write use-memory fast @string",
+     0,NULL,1,1,1,0,0,0},
+
+    {"mset",msetCommand,-3,
+     "write use-memory @string",
+     0,NULL,1,-1,2,0,0,0},
+
+    {"msetnx",msetnxCommand,-3,
+     "write use-memory @string",
+     0,NULL,1,-1,2,0,0,0},
+
+    {"randomkey",randomkeyCommand,1,
+     "read-only random @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"select",selectCommand,2,
+     "ok-loading fast @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"swapdb",swapdbCommand,3,
+     "write fast @keyspace @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"move",moveCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    /* Like for SET, we can't mark rename as a fast command because
+ *      * overwriting the target key may result in an implicit slow DEL. */
+    {"rename",renameCommand,3,
+     "write @keyspace",
+     0,NULL,1,2,1,0,0,0},
+
+    {"renamenx",renamenxCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,2,1,0,0,0},
+
+    {"expire",expireCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"expireat",expireatCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"pexpire",pexpireCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"pexpireat",pexpireatCommand,3,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"keys",keysCommand,2,
+     "read-only to-sort @keyspace @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"scan",scanCommand,-2,
+     "read-only random @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"dbsize",dbsizeCommand,1,
+     "read-only fast @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"auth",authCommand,-2,
+     "no-script ok-loading ok-stale fast no-monitor no-slowlog @connection",
+     0,NULL,0,0,0,0,0,0},
+
+    /* We don't allow PING during loading since in Redis PING is used as
+ *      * failure detection, and a loading server is considered to be
+ *           * not available. */
+    {"ping",pingCommand,-1,
+     "ok-stale fast @connection",
+     0,NULL,0,0,0,0,0,0},
+
+    {"echo",echoCommand,2,
+     "read-only fast @connection",
+     0,NULL,0,0,0,0,0,0},
+
+    {"save",saveCommand,1,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"bgsave",bgsaveCommand,-1,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"bgrewriteaof",bgrewriteaofCommand,1,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"shutdown",shutdownCommand,-1,
+     "admin no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"lastsave",lastsaveCommand,1,
+     "read-only random fast @admin @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"type",typeCommand,2,
+     "read-only fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"multi",multiCommand,1,
+     "no-script fast @transaction",
+     0,NULL,0,0,0,0,0,0},
+
+    {"exec",execCommand,1,
+     "no-script no-monitor no-slowlog @transaction",
+     0,NULL,0,0,0,0,0,0},
+
+    {"discard",discardCommand,1,
+     "no-script fast @transaction",
+     0,NULL,0,0,0,0,0,0},
+
+    {"sync",syncCommand,1,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"psync",syncCommand,3,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"replconf",replconfCommand,-1,
+     "admin no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"flushdb",flushdbCommand,-1,
+     "write @keyspace @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"flushall",flushallCommand,-1,
+     "write @keyspace @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"sort",sortCommand,-2,
+     "write use-memory @list @set @sortedset @dangerous",
+     0,sortGetKeys,1,1,1,0,0,0},
+
+    {"info",infoCommand,-1,
+     "ok-loading ok-stale random @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"monitor",monitorCommand,1,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"ttl",ttlCommand,2,
+     "read-only fast random @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"touch",touchCommand,-2,
+     "read-only fast @keyspace",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"pttl",pttlCommand,2,
+     "read-only fast random @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"persist",persistCommand,2,
+     "write fast @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"slaveof",replicaofCommand,3,
+     "admin no-script ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"replicaof",replicaofCommand,3,
+     "admin no-script ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"role",roleCommand,1,
+     "ok-loading ok-stale no-script fast read-only @dangerous",
+     0,NULL,0,0,0,0,0,0},
+
+    {"debug",debugCommand,-2,
+     "admin no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"config",configCommand,-2,
+     "admin ok-loading ok-stale no-script",
+     0,NULL,0,0,0,0,0,0},
+
+    {"subscribe",subscribeCommand,-2,
+     "pub-sub no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"unsubscribe",unsubscribeCommand,-1,
+     "pub-sub no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"psubscribe",psubscribeCommand,-2,
+     "pub-sub no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"punsubscribe",punsubscribeCommand,-1,
+     "pub-sub no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"publish",publishCommand,3,
+     "pub-sub ok-loading ok-stale fast",
+     0,NULL,0,0,0,0,0,0},
+
+    {"pubsub",pubsubCommand,-2,
+     "pub-sub ok-loading ok-stale random",
+     0,NULL,0,0,0,0,0,0},
+
+    {"watch",watchCommand,-2,
+     "no-script fast @transaction",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"unwatch",unwatchCommand,1,
+     "no-script fast @transaction",
+     0,NULL,0,0,0,0,0,0},
+
+    {"cluster",clusterCommand,-2,
+     "admin ok-stale random",
+     0,NULL,0,0,0,0,0,0},
+
+    {"restore",restoreCommand,-4,
+     "write use-memory @keyspace @dangerous",
+     0,NULL,1,1,1,0,0,0},
+
+    {"restore-asking",restoreCommand,-4,
+    "write use-memory cluster-asking @keyspace @dangerous",
+    0,NULL,1,1,1,0,0,0},
+
+    {"migrate",migrateCommand,-6,
+     "write random @keyspace @dangerous",
+     0,migrateGetKeys,0,0,0,0,0,0},
+
+    {"asking",askingCommand,1,
+     "fast @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"readonly",readonlyCommand,1,
+     "fast @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"readwrite",readwriteCommand,1,
+     "fast @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"dump",dumpCommand,2,
+     "read-only random @keyspace",
+     0,NULL,1,1,1,0,0,0},
+
+    {"object",objectCommand,-2,
+     "read-only random @keyspace",
+     0,NULL,2,2,1,0,0,0},
+
+    {"memory",memoryCommand,-2,
+     "random read-only",
+     0,NULL,0,0,0,0,0,0},
+
+    {"client",clientCommand,-2,
+     "admin no-script random @connection",
+     0,NULL,0,0,0,0,0,0},
+
+    /*{"hello",helloCommand,-2,
+     "no-script fast no-monitor no-slowlog @connection",
+     0,NULL,0,0,0,0,0,0},*/
+
+    /* EVAL can modify the dataset, however it is not flagged as a write
+ *      * command since we do the check while running commands from Lua. */
+    {"eval",evalCommand,-3,
+     "no-script @scripting",
+     0,evalGetKeys,0,0,0,0,0,0},
+
+    {"evalsha",evalShaCommand,-3,
+     "no-script @scripting",
+     0,evalGetKeys,0,0,0,0,0,0},
+
+    {"slowlog",slowlogCommand,-2,
+     "admin random",
+     0,NULL,0,0,0,0,0,0},
+
+    {"script",scriptCommand,-2,
+     "no-script @scripting",
+     0,NULL,0,0,0,0,0,0},
+
+    {"time",timeCommand,1,
+     "read-only random fast",
+     0,NULL,0,0,0,0,0,0},
+
+    {"bitop",bitopCommand,-4,
+     "write use-memory @bitmap",
+     0,NULL,2,-1,1,0,0,0},
+
+    {"bitcount",bitcountCommand,-2,
+     "read-only @bitmap",
+     0,NULL,1,1,1,0,0,0},
+
+    {"bitpos",bitposCommand,-3,
+     "read-only @bitmap",
+     0,NULL,1,1,1,0,0,0},
+
+    {"wait",waitCommand,3,
+     "no-script @keyspace",
+     0,NULL,0,0,0,0,0,0},
+
+    {"command",commandCommand,-1,
+     "ok-loading ok-stale random @connection",
+     0,NULL,0,0,0,0,0,0},
+
+    {"geoadd",geoaddCommand,-5,
+     "write use-memory @geo",
+     0,NULL,1,1,1,0,0,0},
+
+    /* GEORADIUS has store options that may write. */
+    {"georadius",georadiusCommand,-6,
+     "write @geo",
+     0,georadiusGetKeys,1,1,1,0,0,0},
+
+    {"georadius_ro",georadiusroCommand,-6,
+     "read-only @geo",
+     0,georadiusGetKeys,1,1,1,0,0,0},
+
+    {"georadiusbymember",georadiusbymemberCommand,-5,
+     "write @geo",
+     0,georadiusGetKeys,1,1,1,0,0,0},
+
+    {"georadiusbymember_ro",georadiusbymemberroCommand,-5,
+     "read-only @geo",
+     0,georadiusGetKeys,1,1,1,0,0,0},
+
+    {"geohash",geohashCommand,-2,
+     "read-only @geo",
+     0,NULL,1,1,1,0,0,0},
+
+    {"geopos",geoposCommand,-2,
+     "read-only @geo",
+     0,NULL,1,1,1,0,0,0},
+
+    {"geodist",geodistCommand,-4,
+     "read-only @geo",
+     0,NULL,1,1,1,0,0,0},
+
+    {"pfselftest",pfselftestCommand,1,
+     "admin @hyperloglog",
+      0,NULL,0,0,0,0,0,0},
+
+    {"pfadd",pfaddCommand,-2,
+     "write use-memory fast @hyperloglog",
+     0,NULL,1,1,1,0,0,0},
+
+    /* Technically speaking PFCOUNT may change the key since it changes the
+ *      * final bytes in the HyperLogLog representation. However in this case
+ *           * we claim that the representation, even if accessible, is an internal
+ *                * affair, and the command is semantically read only. */
+    {"pfcount",pfcountCommand,-2,
+     "read-only @hyperloglog",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"pfmerge",pfmergeCommand,-2,
+     "write use-memory @hyperloglog",
+     0,NULL,1,-1,1,0,0,0},
+
+    {"pfdebug",pfdebugCommand,-3,
+     "admin write",
+     0,NULL,0,0,0,0,0,0},
+
+    {"xadd",xaddCommand,-5,
+     "write use-memory fast random @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xrange",xrangeCommand,-4,
+     "read-only @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xrevrange",xrevrangeCommand,-4,
+     "read-only @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xlen",xlenCommand,2,
+     "read-only fast @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xread",xreadCommand,-4,
+     "read-only no-script @stream @blocking",
+     0,xreadGetKeys,1,1,1,0,0,0},
+
+    {"xreadgroup",xreadCommand,-7,
+     "write no-script @stream @blocking",
+     0,xreadGetKeys,1,1,1,0,0,0},
+
+    {"xgroup",xgroupCommand,-2,
+     "write use-memory @stream",
+     0,NULL,2,2,1,0,0,0},
+
+    {"xsetid",xsetidCommand,3,
+     "write use-memory fast @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xack",xackCommand,-4,
+     "write fast random @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xpending",xpendingCommand,-3,
+     "read-only random @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xclaim",xclaimCommand,-6,
+     "write random fast @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xinfo",xinfoCommand,-2,
+     "read-only random @stream",
+     0,NULL,2,2,1,0,0,0},
+
+    {"xdel",xdelCommand,-3,
+     "write fast @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"xtrim",xtrimCommand,-2,
+     "write random @stream",
+     0,NULL,1,1,1,0,0,0},
+
+    {"post",securityWarningCommand,-1,
+     "ok-loading ok-stale read-only",
+     0,NULL,0,0,0,0,0,0},
+
+    {"host:",securityWarningCommand,-1,
+     "ok-loading ok-stale read-only",
+     0,NULL,0,0,0,0,0,0},
+
+    {"latency",latencyCommand,-2,
+     "admin no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0},
+
+    {"lolwut",lolwutCommand,-1,
+     "read-only fast",
+     0,NULL,0,0,0,0,0,0},
+
+    {"acl",aclCommand,-2,
+     "admin no-script ok-loading ok-stale",
+     0,NULL,0,0,0,0,0,0}
 };
 
 /*============================ Utility functions ============================ */
@@ -1587,7 +2415,10 @@ void initServerConfig(void) {
     server.pidfile = NULL;
     server.rdb_filename = zstrdup(CONFIG_DEFAULT_RDB_FILENAME);
     server.aof_filename = zstrdup(CONFIG_DEFAULT_AOF_FILENAME);
-    server.requirepass = NULL;
+
+    //server.requirepass = NULL;
+    server.acl_filename = zstrdup(CONFIG_DEFAULT_ACL_FILENAME);
+
     server.rdb_compression = CONFIG_DEFAULT_RDB_COMPRESSION;
     server.rdb_checksum = CONFIG_DEFAULT_RDB_CHECKSUM;
     server.stop_writes_on_bgsave_err = CONFIG_DEFAULT_STOP_WRITES_ON_BGSAVE_ERROR;
@@ -2179,8 +3010,86 @@ void initServer(void) {
     scriptingInit(1);
     slowlogInit();
     latencyMonitorInit();
+
+    /*bioInit();
+    server.initial_memory_usage = zmalloc_used_memory();*/
+
+    }
+
+/* Some steps in server initialization need to be done last (after modules
+ *  * are loaded).
+ *   * Specifically, creation of threads due to a race bug in ld.so, in which
+ *    * Thread Local Storage initialization collides with dlopen call.
+ *     * see: https://sourceware.org/bugzilla/show_bug.cgi?id=19329 */
+void InitServerLast() {
     bioInit();
+
+    //initThreadedIO();
+    //set_jemalloc_bg_thread(server.jemalloc_bg_thread);
+
     server.initial_memory_usage = zmalloc_used_memory();
+}
+
+/* Parse the flags string description 'strflags' and set them to the
+ *  * command 'c'. If the flags are all valid C_OK is returned, otherwise
+ *   * C_ERR is returned (yet the recognized flags are set in the command). */
+int populateCommandTableParseFlags(struct redisCommand *c, char *strflags) {
+    int argc;
+    sds *argv;
+
+    /* Split the line into arguments for processing. */
+    argv = sdssplitargs(strflags,&argc);
+
+    if (argv == NULL) return C_ERR;
+
+    for (int j = 0; j < argc; j++) {
+        char *flag = argv[j];
+        if (!strcasecmp(flag,"write")) {
+            c->flags |= CMD_WRITE|CMD_CATEGORY_WRITE;
+        } else if (!strcasecmp(flag,"read-only")) {
+            c->flags |= CMD_READONLY|CMD_CATEGORY_READ;
+        } else if (!strcasecmp(flag,"use-memory")) {
+            c->flags |= CMD_DENYOOM;
+        } else if (!strcasecmp(flag,"admin")) {
+            c->flags |= CMD_ADMIN|CMD_CATEGORY_ADMIN|CMD_CATEGORY_DANGEROUS;
+        } else if (!strcasecmp(flag,"pub-sub")) {
+            c->flags |= CMD_PUBSUB|CMD_CATEGORY_PUBSUB;
+        } else if (!strcasecmp(flag,"no-script")) {
+            c->flags |= CMD_NOSCRIPT;
+        } else if (!strcasecmp(flag,"random")) {
+            c->flags |= CMD_RANDOM;
+        } else if (!strcasecmp(flag,"to-sort")) {
+            c->flags |= CMD_SORT_FOR_SCRIPT;
+        } else if (!strcasecmp(flag,"ok-loading")) {
+            c->flags |= CMD_LOADING;
+        } else if (!strcasecmp(flag,"ok-stale")) {
+            c->flags |= CMD_STALE;
+        } else if (!strcasecmp(flag,"no-monitor")) {
+            c->flags |= CMD_SKIP_MONITOR;
+        } else if (!strcasecmp(flag,"no-slowlog")) {
+            c->flags |= CMD_SKIP_SLOWLOG;
+        } else if (!strcasecmp(flag,"cluster-asking")) {
+            c->flags |= CMD_ASKING;
+        } else if (!strcasecmp(flag,"fast")) {
+            c->flags |= CMD_FAST | CMD_CATEGORY_FAST;
+        } else {
+            /* Parse ACL categories here if the flag name starts with @. */
+            uint64_t catflag;
+            if (flag[0] == '@' &&
+                (catflag = ACLGetCommandCategoryFlagByName(flag+1)) != 0)
+            {
+                c->flags |= catflag;
+            } else {
+                sdsfreesplitres(argv,argc);
+                return C_ERR;
+            }
+        }
+    }
+    /* If it's not @fast is @slow in this binary world. */
+    if (!(c->flags & CMD_CATEGORY_FAST)) c->flags |= CMD_CATEGORY_SLOW;
+
+    sdsfreesplitres(argv,argc);
+    return C_OK;
 }
 
 /* Populates the Redis Command Table starting from the hard coded list
@@ -2191,10 +3100,12 @@ void populateCommandTable(void) {
 
     for (j = 0; j < numcommands; j++) {
         struct redisCommand *c = redisCommandTable+j;
-        char *f = c->sflags;
+
+        //char *f = c->sflags;
+
         int retval1, retval2;
 
-        while(*f != '\0') {
+        /*while(*f != '\0') {
             switch(*f) {
             case 'w': c->flags |= CMD_WRITE; break;
             case 'r': c->flags |= CMD_READONLY; break;
@@ -2212,7 +3123,12 @@ void populateCommandTable(void) {
             default: serverPanic("Unsupported command flag"); break;
             }
             f++;
-        }
+        }*/
+        /* Translate the command string flags description into an actual
+ *          * set of flags. */
+        if (populateCommandTableParseFlags(c,c->sflags) == C_ERR)
+            serverPanic("Unsupported command flag");
+        c->id = ACLGetCommandID(c->name); /* Assign the ID used for ACL. */
 
         retval1 = dictAdd(server.commands, sdsnew(c->name), c);
         /* Populate an additional dictionary that will be unaffected
@@ -2458,7 +3374,8 @@ void call(client *c, int flags) {
 
     /* Log the command into the Slow log if needed, and populate the
      * per-command statistics that we show in INFO commandstats. */
-    if (flags & CMD_CALL_SLOWLOG && c->cmd->proc != execCommand) {
+    //if (flags & CMD_CALL_SLOWLOG && c->cmd->proc != execCommand) {
+    if (flags & CMD_CALL_SLOWLOG && !(c->cmd->flags & CMD_SKIP_SLOWLOG)) {
         char *latency_event = (c->cmd->flags & CMD_FAST) ?
                               "fast-command" : "command";
         latencyAddSampleIfNeeded(latency_event,duration/1000);
@@ -2577,10 +3494,39 @@ int processCommand(client *c) {
     }
 
     /* Check if the user is authenticated */
-    if (server.requirepass && !c->authenticated && c->cmd->proc != authCommand)
+    /*if (server.requirepass && !c->authenticated && c->cmd->proc != authCommand)
     {
         flagTransaction(c);
-        addReply(c,shared.noautherr);
+        addReply(c,shared.noautherr);*/
+
+    /* Check if the user is authenticated. This check is skipped in case
+ *      * the default user is flagged as "nopass" and is active. */
+    int auth_required = (!(DefaultUser->flags & USER_FLAG_NOPASS) ||
+                           DefaultUser->flags & USER_FLAG_DISABLED) &&
+                        !c->authenticated;
+    if (auth_required) {
+        /* AUTH and HELLO are valid even in non authenticated state. */
+        if (c->cmd->proc != authCommand) {
+            flagTransaction(c);
+            addReply(c,shared.noautherr);
+            return C_OK;
+        }
+    }
+
+    /* Check if the user can run this command according to the current
+ *      * ACLs. */
+    int acl_retval = ACLCheckCommandPerm(c);
+    if (acl_retval != ACL_OK) {
+        flagTransaction(c);
+        if (acl_retval == ACL_DENIED_CMD)
+            addReplyErrorFormat(c,
+                "-NOPERM this user has no permissions to run "
+                "the '%s' command or its subcommand", c->cmd->name);
+        else
+            addReplyErrorFormat(c,
+                "-NOPERM this user has no permissions to access "
+                "one of the keys used as arguments");
+
         return C_OK;
     }
 
@@ -2852,60 +3798,6 @@ int writeCommandsDeniedByDiskError(void) {
         return DISK_ERROR_TYPE_AOF;
     } else {
         return DISK_ERROR_TYPE_NONE;
-    }
-}
-
-/* Return zero if strings are the same, non-zero if they are not.
- * The comparison is performed in a way that prevents an attacker to obtain
- * information about the nature of the strings just monitoring the execution
- * time of the function.
- *
- * Note that limiting the comparison length to strings up to 512 bytes we
- * can avoid leaking any information about the password length and any
- * possible branch misprediction related leak.
- */
-int time_independent_strcmp(char *a, char *b) {
-    char bufa[CONFIG_AUTHPASS_MAX_LEN], bufb[CONFIG_AUTHPASS_MAX_LEN];
-    /* The above two strlen perform len(a) + len(b) operations where either
-     * a or b are fixed (our password) length, and the difference is only
-     * relative to the length of the user provided string, so no information
-     * leak is possible in the following two lines of code. */
-    unsigned int alen = strlen(a);
-    unsigned int blen = strlen(b);
-    unsigned int j;
-    int diff = 0;
-
-    /* We can't compare strings longer than our static buffers.
-     * Note that this will never pass the first test in practical circumstances
-     * so there is no info leak. */
-    if (alen > sizeof(bufa) || blen > sizeof(bufb)) return 1;
-
-    memset(bufa,0,sizeof(bufa));        /* Constant time. */
-    memset(bufb,0,sizeof(bufb));        /* Constant time. */
-    /* Again the time of the following two copies is proportional to
-     * len(a) + len(b) so no info is leaked. */
-    memcpy(bufa,a,alen);
-    memcpy(bufb,b,blen);
-
-    /* Always compare all the chars in the two buffers without
-     * conditional expressions. */
-    for (j = 0; j < sizeof(bufa); j++) {
-        diff |= (bufa[j] ^ bufb[j]);
-    }
-    /* Length must be equal as well. */
-    diff |= alen ^ blen;
-    return diff; /* If zero strings are the same. */
-}
-
-void authCommand(client *c) {
-    if (!server.requirepass) {
-        addReplyError(c,"Client sent AUTH, but no password is set");
-    } else if (!time_independent_strcmp(c->argv[1]->ptr, server.requirepass)) {
-      c->authenticated = 1;
-      addReply(c,shared.ok);
-    } else {
-      c->authenticated = 0;
-      addReplyError(c,"invalid password");
     }
 }
 
@@ -4050,6 +4942,10 @@ int main(int argc, char **argv) {
     dictSetHashFunctionSeed((uint8_t*)hashseed);
     server.sentinel_mode = checkForSentinelMode(argc,argv);
     initServerConfig();
+
+    ACLInit(); /* The ACL subsystem must be initialized ASAP because the
+                  basic networking code and client creation depends on it. */
+
     moduleInitModulesSystem();
 
     /* Store the executable path and arguments in a safe place in order
@@ -4173,6 +5069,10 @@ int main(int argc, char **argv) {
         linuxMemoryWarnings();
     #endif
         moduleLoadFromQueue();
+
+        ACLLoadUsersAtStartup();
+        InitServerLast();
+
         loadDataFromDisk();
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == C_ERR) {
@@ -4187,6 +5087,9 @@ int main(int argc, char **argv) {
         if (server.sofd > 0)
             serverLog(LL_NOTICE,"The server is now ready to accept connections at %s", server.unixsocket);
     } else {
+
+        InitServerLast();
+
         sentinelIsRunning();
     }
 

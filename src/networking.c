@@ -119,12 +119,17 @@ client *createClient(int fd) {
     c->argc = 0;
     c->argv = NULL;
     c->cmd = c->lastcmd = NULL;
+
+    c->user = DefaultUser;
+
     c->multibulklen = 0;
     c->bulklen = -1;
     c->sentlen = 0;
     c->flags = 0;
     c->ctime = c->lastinteraction = server.unixtime;
-    c->authenticated = 0;
+
+    c->authenticated = (c->user->flags & USER_FLAG_NOPASS) != 0;
+
     c->replstate = REPL_STATE_NONE;
     c->repl_put_online_on_ack = 0;
     c->reploff = 0;
@@ -692,8 +697,9 @@ static void acceptCommonHandler(int fd, int flags, char *ip) {
      * user what to do to fix it if needed. */
     if (server.protected_mode &&
         server.bindaddr_count == 0 &&
-        server.requirepass == NULL &&
-        !(flags & CLIENT_UNIX_SOCKET) &&
+        //server.requirepass == NULL &&
+        DefaultUser->flags & USER_FLAG_NOPASS &&
+        !(c->flags & CLIENT_UNIX_SOCKET) &&
         ip != NULL)
     {
         if (strcmp(ip,"127.0.0.1") && strcmp(ip,"::1")) {
@@ -1691,7 +1697,8 @@ sds catClientInfoString(sds s, client *client) {
         (unsigned long long) listLength(client->reply),
         (unsigned long long) getClientOutputBufferMemoryUsage(client),
         events,
-        client->lastcmd ? client->lastcmd->name : "NULL");
+        client->lastcmd ? client->lastcmd->name : "NULL",
+        client->user ? client->user->name : "(superuser)");
 }
 
 sds getAllClientsInfoString(int type) {

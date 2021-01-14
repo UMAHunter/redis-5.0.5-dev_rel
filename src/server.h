@@ -148,6 +148,9 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CONFIG_DEFAULT_RDB_SAVE_INCREMENTAL_FSYNC 1
 #define CONFIG_DEFAULT_MIN_SLAVES_TO_WRITE 0
 #define CONFIG_DEFAULT_MIN_SLAVES_MAX_LAG 10
+
+#define CONFIG_DEFAULT_ACL_FILENAME ""
+
 #define NET_IP_STR_LEN 46 /* INET6_ADDRSTRLEN is 46, but we need to be sure */
 #define NET_PEER_ID_LEN (NET_IP_STR_LEN+32) /* Must be enough for ip:port */
 #define CONFIG_BINDADDR_MAX 16
@@ -202,22 +205,54 @@ typedef long long mstime_t; /* millisecond time type. */
 
 /* Command flags. Please check the command table defined in the redis.c file
  * for more information about the meaning of every flag. */
-#define CMD_WRITE (1<<0)            /* "w" flag */
-#define CMD_READONLY (1<<1)         /* "r" flag */
-#define CMD_DENYOOM (1<<2)          /* "m" flag */
-#define CMD_MODULE (1<<3)           /* Command exported by module. */
-#define CMD_ADMIN (1<<4)            /* "a" flag */
-#define CMD_PUBSUB (1<<5)           /* "p" flag */
-#define CMD_NOSCRIPT (1<<6)         /* "s" flag */
-#define CMD_RANDOM (1<<7)           /* "R" flag */
-#define CMD_SORT_FOR_SCRIPT (1<<8)  /* "S" flag */
-#define CMD_LOADING (1<<9)          /* "l" flag */
-#define CMD_STALE (1<<10)           /* "t" flag */
-#define CMD_SKIP_MONITOR (1<<11)    /* "M" flag */
-#define CMD_ASKING (1<<12)          /* "k" flag */
-#define CMD_FAST (1<<13)            /* "F" flag */
-#define CMD_MODULE_GETKEYS (1<<14)  /* Use the modules getkeys interface. */
-#define CMD_MODULE_NO_CLUSTER (1<<15) /* Deny on Redis Cluster. */
+#define CMD_WRITE (1ULL<<0)            /* "w" flag */
+#define CMD_READONLY (1ULL<<1)         /* "r" flag */
+#define CMD_DENYOOM (1ULL<<2)          /* "m" flag */
+#define CMD_MODULE (1ULL<<3)           /* Command exported by module. */
+#define CMD_ADMIN (1ULL<<4)            /* "a" flag */
+#define CMD_PUBSUB (1ULL<<5)           /* "p" flag */
+#define CMD_NOSCRIPT (1ULL<<6)         /* "s" flag */
+#define CMD_RANDOM (1ULL<<7)           /* "R" flag */
+#define CMD_SORT_FOR_SCRIPT (1ULL<<8)  /* "S" flag */
+#define CMD_LOADING (1ULL<<9)          /* "l" flag */
+#define CMD_STALE (1ULL<<10)           /* "t" flag */
+#define CMD_SKIP_MONITOR (1ULL<<11)    /* "M" flag */
+
+//#define CMD_ASKING (1ULL<<12)          /* "k" flag */
+//#define CMD_FAST (1ULL<<13)            /* "F" flag */
+//#define CMD_MODULE_GETKEYS (1ULL<<14)  /* Use the modules getkeys interface. */
+//#define CMD_MODULE_NO_CLUSTER (1ULL<<15) /* Deny on Redis Cluster. */
+
+#define CMD_SKIP_SLOWLOG (1ULL<<12)    /* "no-slowlog" flag */
+#define CMD_ASKING (1ULL<<13)          /* "cluster-asking" flag */
+#define CMD_FAST (1ULL<<14)            /* "fast" flag */
+
+/* Command flags used by the module system. */
+#define CMD_MODULE_GETKEYS (1ULL<<15)  /* Use the modules getkeys interface. */
+#define CMD_MODULE_NO_CLUSTER (1ULL<<16) /* Deny on Redis Cluster. */
+
+/* Command flags that describe ACLs categories. */
+#define CMD_CATEGORY_KEYSPACE (1ULL<<17)
+#define CMD_CATEGORY_READ (1ULL<<18)
+#define CMD_CATEGORY_WRITE (1ULL<<19)
+#define CMD_CATEGORY_SET (1ULL<<20)
+#define CMD_CATEGORY_SORTEDSET (1ULL<<21)
+#define CMD_CATEGORY_LIST (1ULL<<22)
+#define CMD_CATEGORY_HASH (1ULL<<23)
+#define CMD_CATEGORY_STRING (1ULL<<24)
+#define CMD_CATEGORY_BITMAP (1ULL<<25)
+#define CMD_CATEGORY_HYPERLOGLOG (1ULL<<26)
+#define CMD_CATEGORY_GEO (1ULL<<27)
+#define CMD_CATEGORY_STREAM (1ULL<<28)
+#define CMD_CATEGORY_PUBSUB (1ULL<<29)
+#define CMD_CATEGORY_ADMIN (1ULL<<30)
+#define CMD_CATEGORY_FAST (1ULL<<31)
+#define CMD_CATEGORY_SLOW (1ULL<<32)
+#define CMD_CATEGORY_BLOCKING (1ULL<<33)
+#define CMD_CATEGORY_DANGEROUS (1ULL<<34)
+#define CMD_CATEGORY_CONNECTION (1ULL<<35)
+#define CMD_CATEGORY_TRANSACTION (1ULL<<36)
+#define CMD_CATEGORY_SCRIPTING (1ULL<<37)
 
 /* AOF states */
 #define AOF_OFF 0             /* AOF is off */
@@ -709,6 +744,49 @@ typedef struct readyList {
     robj *key;
 } readyList;
 
+/* This structure represents a Redis user. This is useful for ACLs, the
+ *  * user is associated to the connection after the connection is authenticated.
+ *   * If there is no associated user, the connection uses the default user. */
+#define USER_COMMAND_BITS_COUNT 1024    /* The total number of command bits
+                                           in the user structure. The last valid
+                                           command ID we can set in the user
+                                           is USER_COMMAND_BITS_COUNT-1. */
+#define USER_FLAG_ENABLED (1<<0)        /* The user is active. */
+#define USER_FLAG_DISABLED (1<<1)       /* The user is disabled. */
+#define USER_FLAG_ALLKEYS (1<<2)        /* The user can mention any key. */
+#define USER_FLAG_ALLCOMMANDS (1<<3)    /* The user can run all commands. */
+#define USER_FLAG_NOPASS      (1<<4)    /* The user requires no password, any
+                                           provided password will work. For the
+                                           default user, this also means that
+                                           no AUTH is needed, and every
+                                           connection is immediately
+                                           authenticated. */
+typedef struct user {
+    sds name;       /* The username as an SDS string. */
+    uint64_t flags; /* See USER_FLAG_* */
+
+    /* The bit in allowed_commands is set if this user has the right to
+ *      * execute this command. In commands having subcommands, if this bit is
+ *           * set, then all the subcommands are also available.
+ *                *
+ *                     * If the bit for a given command is NOT set and the command has
+ *                          * subcommands, Redis will also check allowed_subcommands in order to
+ *                               * understand if the command can be executed. */
+    uint64_t allowed_commands[USER_COMMAND_BITS_COUNT/64];
+
+    /* This array points, for each command ID (corresponding to the command
+ *      * bit set in allowed_commands), to an array of SDS strings, terminated by
+ *           * a NULL pointer, with all the sub commands that can be executed for
+ *                * this command. When no subcommands matching is used, the field is just
+ *                     * set to NULL to avoid allocating USER_COMMAND_BITS_COUNT pointers. */
+    sds **allowed_subcommands;
+    list *passwords; /* A list of SDS valid passwords for this user. */
+    list *patterns;  /* A list of allowed key patterns. If this field is NULL
+                        the user cannot mention any key in a command, unless
+                        the flag ALLKEYS is set in the user. */
+} user;
+
+
 /* With multiplexing we need to take per-client state.
  * Clients are taken in a linked list. */
 typedef struct client {
@@ -726,6 +804,11 @@ typedef struct client {
     int argc;               /* Num of arguments of current command. */
     robj **argv;            /* Arguments of current command. */
     struct redisCommand *cmd, *lastcmd;  /* Last command executed. */
+
+    user *user;             /* User associated with this connection. If the
+                               user is set to NULL the connection can do
+                               anything (admin). */
+
     int reqtype;            /* Request protocol type: PROTO_REQ_* */
     int multibulklen;       /* Number of multi bulk arguments left to read. */
     long bulklen;           /* Length of bulk argument in multi bulk request. */
@@ -1272,6 +1355,10 @@ struct redisServer {
     /* Latency monitor */
     long long latency_monitor_threshold;
     dict *latency_events;
+
+    /* ACLs */
+    char *acl_filename;     /* ACL Users file. NULL if not configured. */
+
     /* Assert & bug reporting */
     const char *assert_failed;
     const char *assert_file;
@@ -1300,7 +1387,10 @@ struct redisCommand {
     redisCommandProc *proc;
     int arity;
     char *sflags; /* Flags as string representation, one char per flag. */
-    int flags;    /* The actual flags, obtained from the 'sflags' field. */
+
+    //int flags;    /* The actual flags, obtained from the 'sflags' field. */
+    uint64_t flags;    /* The actual flags, obtained from the 'sflags' field. */
+
     /* Use a function to determine keys arguments in a command line.
      * Used for Redis Cluster redirect. */
     redisGetKeysProc *getkeys_proc;
@@ -1309,6 +1399,13 @@ struct redisCommand {
     int lastkey;  /* The last argument that's a key */
     int keystep;  /* The step between first and last key */
     long long microseconds, calls;
+
+    int id;     /* Command ID. This is a progressive ID starting from 0 that
+                   is assigned at runtime, and is used in order to check
+                   ACLs. A connection is able to execute a given command if
+                   the user associated to the connection has this command
+                   bit set in the bitmap of allowed commands. */
+
 };
 
 struct redisFunctionSym {
@@ -1640,6 +1737,29 @@ void openChildInfoPipe(void);
 void closeChildInfoPipe(void);
 void sendChildInfo(int process_type);
 void receiveChildInfo(void);
+
+/* acl.c -- Authentication related prototypes. */
+extern rax *Users;
+extern user *DefaultUser;
+void ACLInit(void);
+/* Return values for ACLCheckUserCredentials(). */
+#define ACL_OK 0
+#define ACL_DENIED_CMD 1
+#define ACL_DENIED_KEY 2
+int ACLCheckUserCredentials(robj *username, robj *password);
+int ACLAuthenticateUser(client *c, robj *username, robj *password);
+unsigned long ACLGetCommandID(const char *cmdname);
+user *ACLGetUserByName(const char *name, size_t namelen);
+int ACLCheckCommandPerm(client *c);
+int ACLSetUser(user *u, const char *op, ssize_t oplen);
+sds ACLDefaultUserFirstPassword(void);
+uint64_t ACLGetCommandCategoryFlagByName(const char *name);
+int ACLAppendUserForLoading(sds *argv, int argc, int *argc_err);
+char *ACLSetUserStringError(void);
+int ACLLoadConfiguredUsers(void);
+sds ACLDescribeUser(user *u);
+void ACLLoadUsersAtStartup(void);
+void addReplyCommandCategories(client *c, struct redisCommand *cmd);
 
 /* Sorted sets data type */
 
@@ -2131,6 +2251,8 @@ void xdelCommand(client *c);
 void xtrimCommand(client *c);
 void lolwutCommand(client *c);
 
+void aclCommand(client *c);
+
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
 void free(void *ptr) __attribute__ ((deprecated));
@@ -2153,6 +2275,8 @@ void serverLogHexDump(int level, char *descr, void *value, size_t len);
 int memtest_preserving_test(unsigned long *m, size_t bytes, int passes);
 void mixDigest(unsigned char *digest, void *ptr, size_t len);
 void xorDigest(unsigned char *digest, void *ptr, size_t len);
+
+int populateCommandTableParseFlags(struct redisCommand *c, char *strflags);
 
 #define redisDebug(fmt, ...) \
     printf("DEBUG %s:%d > " fmt "\n", __FILE__, __LINE__, __VA_ARGS__)
