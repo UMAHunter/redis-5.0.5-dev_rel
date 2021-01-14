@@ -25,3 +25,4 @@ start_server {tags {"auth"} overrides {requirepass foobar}} {
         r incr foo
     } {101}
 }
+
