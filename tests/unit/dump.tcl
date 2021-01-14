@@ -350,18 +350,18 @@ start_server {tags {"dump"}} {
             set second_host [srv 0 host]
             set second_port [srv 0 port]
             $second config set requirepass foobar
-            $second auth foobar
+            $second auth default foobar
 
             assert {[$first exists list] == 1}
             assert {[$second exists list] == 0}
-            set ret [r -1 migrate $second_host $second_port list 9 5000 AUTH foobar]
+            set ret [r -1 migrate $second_host $second_port list 9 5000]
             assert {$ret eq {OK}}
             assert {[$second exists list] == 1}
             assert {[$second lrange list 0 -1] eq {d c b a}}
 
             r -1 lpush list a b c d
             $second config set requirepass foobar2
-            catch {r -1 migrate $second_host $second_port list 9 5000 AUTH foobar} err
+            catch {r -1 migrate $second_host $second_port list 9 5000} err
             assert_match {*invalid password*} $err
         }
     }
