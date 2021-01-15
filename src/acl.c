@@ -1101,7 +1101,6 @@ int ACLCheckCommandPerm(client *c) {
     }
 	
     /* If there is no associated user, the connection can run anything. */
-    if (u == NULL) return ACL_OK;
     return ACL_OK;
 }
 

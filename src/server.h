@@ -217,12 +217,6 @@ typedef long long mstime_t; /* millisecond time type. */
 #define CMD_LOADING (1ULL<<9)          /* "l" flag */
 #define CMD_STALE (1ULL<<10)           /* "t" flag */
 #define CMD_SKIP_MONITOR (1ULL<<11)    /* "M" flag */
-
-//#define CMD_ASKING (1ULL<<12)          /* "k" flag */
-//#define CMD_FAST (1ULL<<13)            /* "F" flag */
-//#define CMD_MODULE_GETKEYS (1ULL<<14)  /* Use the modules getkeys interface. */
-//#define CMD_MODULE_NO_CLUSTER (1ULL<<15) /* Deny on Redis Cluster. */
-
 #define CMD_SKIP_SLOWLOG (1ULL<<12)    /* "no-slowlog" flag */
 #define CMD_ASKING (1ULL<<13)          /* "cluster-asking" flag */
 #define CMD_FAST (1ULL<<14)            /* "fast" flag */
@@ -745,8 +739,8 @@ typedef struct readyList {
 } readyList;
 
 /* This structure represents a Redis user. This is useful for ACLs, the
- *  * user is associated to the connection after the connection is authenticated.
- *   * If there is no associated user, the connection uses the default user. */
+ * user is associated to the connection after the connection is authenticated.
+ * If there is no associated user, the connection uses the default user. */
 #define USER_COMMAND_BITS_COUNT 1024    /* The total number of command bits
                                            in the user structure. The last valid
                                            command ID we can set in the user
@@ -766,19 +760,19 @@ typedef struct user {
     uint64_t flags; /* See USER_FLAG_* */
 
     /* The bit in allowed_commands is set if this user has the right to
- *      * execute this command. In commands having subcommands, if this bit is
- *           * set, then all the subcommands are also available.
- *                *
- *                     * If the bit for a given command is NOT set and the command has
- *                          * subcommands, Redis will also check allowed_subcommands in order to
- *                               * understand if the command can be executed. */
+     * execute this command. In commands having subcommands, if this bit is
+     * set, then all the subcommands are also available.
+     *
+     * If the bit for a given command is NOT set and the command has
+     * subcommands, Redis will also check allowed_subcommands in order to
+     * understand if the command can be executed. */
     uint64_t allowed_commands[USER_COMMAND_BITS_COUNT/64];
 
     /* This array points, for each command ID (corresponding to the command
- *      * bit set in allowed_commands), to an array of SDS strings, terminated by
- *           * a NULL pointer, with all the sub commands that can be executed for
- *                * this command. When no subcommands matching is used, the field is just
- *                     * set to NULL to avoid allocating USER_COMMAND_BITS_COUNT pointers. */
+     * bit set in allowed_commands), to an array of SDS strings, terminated by
+     * a NULL pointer, with all the sub commands that can be executed for
+     * this command. When no subcommands matching is used, the field is just
+     * set to NULL to avoid allocating USER_COMMAND_BITS_COUNT pointers. */
     sds **allowed_subcommands;
     list *passwords; /* A list of SDS valid passwords for this user. */
     list *patterns;  /* A list of allowed key patterns. If this field is NULL
@@ -1234,6 +1228,7 @@ struct redisServer {
     int repl_diskless_sync;         /* Send RDB to slaves sockets directly. */
     int repl_diskless_sync_delay;   /* Delay to start a diskless repl BGSAVE. */
     /* Replication (slave) */
+    char *masteruser;               /* AUTH with this user and masterauth with master */
     char *masterauth;               /* AUTH with this password with master */
     char *masterhost;               /* Hostname of master */
     int masterport;                 /* Port of master */
