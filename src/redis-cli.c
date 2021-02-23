@@ -45,6 +45,11 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <pthread.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <gssapi/gssapi.h>
 
 #include <hiredis.h>
 #include <sds.h> /* use sds.h from hiredis, so that only one set of sds functions will be present in the binary */
@@ -141,6 +146,25 @@
 #define CC_FORCE (1<<0)         /* Re-connect if already connected. */
 #define CC_QUIET (1<<1)         /* Don't log connecting errors. */
 
+/* Token types */
+#define TOKEN_NOOP              (1<<0)
+#define TOKEN_CONTEXT           (1<<1)
+#define TOKEN_DATA              (1<<2)
+#define TOKEN_MIC               (1<<3)
+
+/* Token flags */
+#define TOKEN_CONTEXT_NEXT      (1<<4)
+#define TOKEN_WRAPPED           (1<<5)
+#define TOKEN_ENCRYPTED         (1<<6)
+#define TOKEN_SEND_MIC          (1<<7)
+
+FILE *display_file;
+
+gss_buffer_desc empty_token_buf = { 0, (void *) "" };
+gss_buffer_t empty_token = &empty_token_buf;
+
+void display_ctx_flags(OM_uint32 flags);
+
 /* --latency-dist palettes. */
 int spectrum_palette_color_size = 19;
 int spectrum_palette_color[] = {0,233,234,235,237,239,241,243,245,247,144,143,142,184,226,214,208,202,196};
@@ -216,9 +240,7 @@ static struct config {
     int hotkeys;
     int stdinarg; /* get last arg from stdin. (-x option) */
     char *auth;
-
     char *user;
-
     int output; /* output mode, see OUTPUT_* defines */
     sds mb_delim;
     char prompt[128];
@@ -720,22 +742,6 @@ static void freeHintsCallback(void *ptr) {
     sdsfree(ptr);
 }
 
-/*------------------------------------------------------------------------------
- * Networking / parsing
- *--------------------------------------------------------------------------- */
-
-/* Send AUTH command to the server */
-/*static int cliAuth(void) {
-    redisReply *reply;
-    if (config.auth == NULL) return REDIS_OK;
-
-    reply = redisCommand(context,"AUTH %s",config.auth);
-    if (reply != NULL) {
-        freeReplyObject(reply);
-        return REDIS_OK;
-    }
-    return REDIS_ERR;
-}*/
 static int cliAuth(void) {
     redisReply *reply;
     if (config.auth == NULL) return REDIS_OK;
@@ -766,6 +772,479 @@ static int cliSelect(void) {
         return result;
     }
     return REDIS_ERR;
+}
+
+static int
+write_all(int fildes, const void *data, unsigned int nbyte)
+{
+    int ret;
+    const char *ptr, *buf = data;
+
+    for (ptr = buf; nbyte; ptr += ret, nbyte -= ret) {
+        ret = send(fildes, ptr, nbyte, 0);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return (ret);
+        } else if (ret == 0) {
+            return (ptr - buf);
+        }
+    }
+
+    return (ptr - buf);
+}
+
+static int
+read_all(int fildes, void *data, unsigned int nbyte)
+{
+    int     ret;
+    char   *ptr, *buf = data;
+    fd_set  rfds;
+    struct timeval tv;
+
+    FD_ZERO(&rfds);
+    FD_SET(fildes, &rfds);
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+
+    for (ptr = buf; nbyte; ptr += ret, nbyte -= ret) {
+        if (select(FD_SETSIZE, &rfds, NULL, NULL, &tv) <= 0
+            || !FD_ISSET(fildes, &rfds))
+            return (ptr - buf);
+        ret = recv(fildes, ptr, nbyte, 0);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return (ret);
+        } else if (ret == 0) {
+            return (ptr - buf);
+        }
+    }
+
+    return (ptr - buf);
+}
+
+/*
+ * Helper to send a token on the specified file descriptor.
+ *
+ * If errors are encountered, this routine must not directly cause
+ * termination of the process because compliant GSS applications
+ * must release resources allocated by the GSS library before
+ * exiting.
+ *
+ * Returns 0 on success, nonzero on failure.
+ */
+static int
+send_token(int fd, int flags, gss_buffer_t token)
+{
+    /*
+     * Supply token framing and transmission code here.
+     *
+     * It is advisable for the application protocol to specify the
+     * length of the token being transmitted unless the underlying
+     * transit does so implicitly.
+     *
+     * In addition to checking for error returns from whichever
+     * syscall(s) are used to send data, applications should have
+     * a loop to handle EINTR returns.
+     */
+    int     ret;
+    unsigned char char_flags = (unsigned char) flags;
+    unsigned char lenbuf[4];
+
+    if (char_flags) {
+        ret = write_all(fd, (char *) &char_flags, 1);
+        if (ret != 1) {
+            perror("sending token flags");
+            return -1;
+        }
+    }
+    if (token->length > 0xffffffffUL)
+        abort();
+    lenbuf[0] = (token->length >> 24) & 0xff;
+    lenbuf[1] = (token->length >> 16) & 0xff;
+    lenbuf[2] = (token->length >> 8) & 0xff;
+    lenbuf[3] = token->length & 0xff;
+
+    ret = write_all(fd, lenbuf, 4);
+    if (ret < 0) {
+        perror("sending token length");
+        return -1;
+    } else if (ret != 4) {
+        if (display_file) {
+            fprintf(display_file,
+                    "sending token length: %d of %d bytes written\n", ret, 4);
+        }
+        return -1;
+    }
+
+    ret = write_all(fd, token->value, token->length);
+    if (ret < 0) {
+        perror("sending token data");
+        return -1;
+    } else if ((size_t)ret != token->length) {
+        if (display_file) {
+            fprintf(display_file,
+                    "sending token data: %d of %d bytes written\n",
+                    ret, (int)token->length);
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+int
+recv_token(int s, int *flags, gss_buffer_t tok)
+{
+    int ret;
+    unsigned char char_flags;
+    unsigned char lenbuf[4];
+
+    ret = read_all(s, (char *)&char_flags, 1);
+    if (ret < 0) {
+        perror("reading token flags");
+        return -1;
+    } else if (!ret) {
+        if (display_file)
+            fputs("reading token flags: 0 bytes read\n", display_file);
+        return -1;
+    } else {
+        *flags = char_flags;
+    }
+
+    if (char_flags == 0) {
+        lenbuf[0] = 0;
+        ret = read_all(s, (char *)&lenbuf[1], 3);
+        if (ret < 0) {
+            perror("reading token length");
+            return -1;
+        } else if (ret != 3) {
+            if (display_file) {
+                fprintf(display_file,
+                        "reading token length: %d of %d bytes read\n", ret, 3);
+            }
+            return -1;
+        }
+    } else {
+        ret = read_all(s, (char *)lenbuf, 4);
+        if (ret < 0) {
+            perror("reading token length");
+            return -1;
+        } else if (ret != 4) {
+            if (display_file) {
+                fprintf(display_file,
+                        "reading token length: %d of %d bytes read\n", ret, 4);
+            }
+            return -1;
+        }
+    }
+
+    tok->length = ((lenbuf[0] << 24)
+                   | (lenbuf[1] << 16)
+                   | (lenbuf[2] << 8)
+                   | lenbuf[3]);
+    tok->value = malloc(tok->length ? tok->length : 1);
+    if (tok->length && tok->value == NULL) {
+        if (display_file)
+            fprintf(display_file, "Out of memory allocating token data\n");
+        return -1;
+    }
+
+    ret = read_all(s, (char *)tok->value, tok->length);
+    if (ret < 0) {
+        perror("reading token data");
+        free(tok->value);
+        return -1;
+    } else if ((size_t)ret != tok->length) {
+        fprintf(stderr, "sending token data: %d of %d bytes written\n",
+                ret, (int)tok->length);
+        free(tok->value);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void
+display_status_1(char *m, OM_uint32 code, int type)
+{
+    OM_uint32 min_stat;
+    gss_buffer_desc msg;
+    OM_uint32 msg_ctx;
+
+    msg_ctx = 0;
+    while (1) {
+        (void)gss_display_status(&min_stat, code, type, GSS_C_NULL_OID,
+                                 &msg_ctx, &msg);
+        if (display_file) {
+            fprintf(display_file, "GSS-API error %s: %s\n", m,
+                    (char *)msg.value);
+        }
+        (void)gss_release_buffer(&min_stat, &msg);
+
+        if (!msg_ctx)
+            break;
+    }
+}
+
+/*
+ * Function: display_status
+ *
+ * Purpose: displays GSS-API messages
+ *
+ * Arguments:
+ *
+ *      msg             a string to be displayed with the message
+ *      maj_stat        the GSS-API major status code
+ *      min_stat        the GSS-API minor status code
+ *
+ * Effects:
+ *
+ * The GSS-API messages associated with maj_stat and min_stat are
+ * displayed on stderr, each preceeded by "GSS-API error <msg>: " and
+ * followed by a newline.
+ */
+void
+display_status(char *msg, OM_uint32 maj_stat, OM_uint32 min_stat)
+{
+    display_status_1(msg, maj_stat, GSS_C_GSS_CODE);
+    display_status_1(msg, min_stat, GSS_C_MECH_CODE);
+}
+
+/*
+ * Function: client_establish_context
+ *
+ * Purpose: establishes a GSS-API context with a specified service and
+ * returns the context handle
+ *
+ * Arguments:
+ *
+ *      s                   (r) an established TCP connection to the service
+ *      service_name(r) the ASCII service name of the service
+ *      gss_flags       (r) GSS-API delegation flag (if any)
+ *      auth_flag       (r) whether to actually do authentication
+ *  v1_format   (r) whether the v1 sample protocol should be used
+ *      oid                 (r) OID of the mechanism to use
+ *      context         (w) the established GSS-API context
+ *      ret_flags       (w) the returned flags from init_sec_context
+ *
+ * Returns: 0 on success, -1 on failure
+ *
+ * Effects:
+ *
+ * service_name is imported as a GSS-API name and a GSS-API context is
+ * established with the corresponding service; the service should be
+ * listening on the TCP connection s.  The default GSS-API mechanism
+ * is used, and mutual authentication and replay detection are
+ * requested.
+ *
+ * If successful, the context handle is returned in context.  If
+ * unsuccessful, the GSS-API error messages are displayed on stderr
+ * and -1 is returned.
+ */
+static int
+client_establish_context(int s, char *service_name, OM_uint32 gss_flags,
+                         gss_ctx_id_t *gss_context, OM_uint32 *ret_flags)
+{
+    gss_buffer_desc send_tok, recv_tok, *token_ptr;
+    gss_name_t target_name;
+    OM_uint32 maj_stat, min_stat, init_sec_min_stat;
+    int token_flags;
+    gss_cred_id_t cred = GSS_C_NO_CREDENTIAL;
+
+    /*
+     * Import the name into target_name.  Use send_tok to save
+     * local variable space.
+     */
+    send_tok.value = service_name;
+    send_tok.length = strlen(service_name);
+    maj_stat = gss_import_name(&min_stat, &send_tok,
+                                GSS_C_NT_HOSTBASED_SERVICE,
+                                &target_name);
+    if (maj_stat != GSS_S_COMPLETE) {
+        display_status("parsing name", maj_stat, min_stat);
+        return -1;
+    }
+
+    if (send_token(s, TOKEN_NOOP | TOKEN_CONTEXT_NEXT, empty_token) < 0) {
+        (void) gss_release_name(&min_stat, &target_name);
+        return -1;
+    }
+
+    /*
+        * Perform the context-establishement loop.
+        *
+        * On each pass through the loop, token_ptr points to the token
+        * to send to the server (or GSS_C_NO_BUFFER on the first pass).
+        * Every generated token is stored in send_tok which is then
+        * transmitted to the server; every received token is stored in
+        * recv_tok, which token_ptr is then set to, to be processed by
+        * the next call to gss_init_sec_context.
+        *
+        * GSS-API guarantees that send_tok's length will be non-zero
+        * if and only if the server is expecting another token from us,
+        * and that gss_init_sec_context returns GSS_S_CONTINUE_NEEDED if
+        * and only if the server has another token to send us.
+        */
+
+    token_ptr = GSS_C_NO_BUFFER;
+    *gss_context = GSS_C_NO_CONTEXT;
+
+    do {
+        maj_stat = gss_init_sec_context(&init_sec_min_stat,
+                                        cred, gss_context,
+                                        target_name, NULL,
+                                        gss_flags, 0,
+                                        NULL, /* channel bindings */
+                                        token_ptr, NULL, /* mech type */
+                                        &send_tok, ret_flags,
+                                        NULL);  /* time_rec */
+
+        if (token_ptr != GSS_C_NO_BUFFER)
+            free(recv_tok.value);
+
+        if (send_tok.length != 0) {
+            if (send_token(s, TOKEN_CONTEXT, &send_tok) < 0) {
+                (void) gss_release_buffer(&min_stat, &send_tok);
+                (void) gss_release_name(&min_stat, &target_name);
+                return -1;
+            }
+        }
+        (void) gss_release_buffer(&min_stat, &send_tok);
+
+        if (maj_stat != GSS_S_COMPLETE
+            && maj_stat != GSS_S_CONTINUE_NEEDED) {
+            display_status("initializing context", maj_stat,
+                            init_sec_min_stat);
+            (void) gss_release_name(&min_stat, &target_name);
+            (void) gss_release_cred(&min_stat, &cred);
+            if (*gss_context != GSS_C_NO_CONTEXT)
+                gss_delete_sec_context(&min_stat, gss_context,
+                                        GSS_C_NO_BUFFER);
+            return -1;
+        }
+
+        if (maj_stat == GSS_S_CONTINUE_NEEDED) {
+            if (recv_token(s, &token_flags, &recv_tok) < 0) {
+                (void) gss_release_name(&min_stat, &target_name);
+                return -1;
+            }
+            token_ptr = &recv_tok;
+        }
+    } while (maj_stat == GSS_S_CONTINUE_NEEDED);
+
+    (void) gss_release_cred(&min_stat, &cred);
+    (void) gss_release_name(&min_stat, &target_name);
+
+    return 0;
+}
+
+/*
+ * Function: display_ctx_flags
+ *
+ * Purpose: displays the flags returned by context initation in
+ *          a human-readable form
+ *
+ * Arguments:
+ *
+ *      int             ret_flags
+ *
+ * Effects:
+ *
+ * Strings corresponding to the context flags are printed on
+ * stdout, preceded by "context flag: " and followed by a newline
+ */
+
+void
+display_ctx_flags(flags)
+    OM_uint32 flags;
+{
+    if (flags & GSS_C_DELEG_FLAG)
+        fprintf(display_file, "context flag: GSS_C_DELEG_FLAG\n");
+    if (flags & GSS_C_MUTUAL_FLAG)
+        fprintf(display_file, "context flag: GSS_C_MUTUAL_FLAG\n");
+    if (flags & GSS_C_REPLAY_FLAG)
+        fprintf(display_file, "context flag: GSS_C_REPLAY_FLAG\n");
+    if (flags & GSS_C_SEQUENCE_FLAG)
+        fprintf(display_file, "context flag: GSS_C_SEQUENCE_FLAG\n");
+    if (flags & GSS_C_CONF_FLAG)
+        fprintf(display_file, "context flag: GSS_C_CONF_FLAG \n");
+    if (flags & GSS_C_INTEG_FLAG)
+        fprintf(display_file, "context flag: GSS_C_INTEG_FLAG \n");
+}
+
+/*
+ * Function: connect_to_server
+ *
+ * Purpose: Opens a TCP connection to the name host and port.
+ *
+ * Arguments:
+ *
+ *      host            (r) the target host name
+ *      port            (r) the target port, in host byte order
+ *
+ * Returns: the established socket file desciptor, or -1 on failure
+ *
+ * Effects:
+ *
+ * The host name is resolved with gethostbyname(), and the socket is
+ * opened and connected.  If an error occurs, an error message is
+ * displayed and -1 is returned.
+ */
+static int
+connect_to_server(char *host, u_short port)
+{
+    struct sockaddr_in saddr;
+    struct hostent *hp;
+    int     s;
+
+    if ((hp = gethostbyname(host)) == NULL) {
+        fprintf(stderr, "Unknown host: %s\n", host);
+        return -1;
+    }
+
+    saddr.sin_family = hp->h_addrtype;
+    memcpy(&saddr.sin_addr, hp->h_addr, sizeof(saddr.sin_addr));
+    saddr.sin_port = htons(port);
+
+    if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("creating socket");
+        return -1;
+    }
+    if (connect(s, (struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+        perror("connecting to server");
+        (void) close(s);
+        return -1;
+    }
+    return s;
+}
+
+static char *service_name = "redis@sizu05";
+static OM_uint32 gss_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG;
+static OM_uint32 min_stat;
+
+static int GSSAuth() {
+    display_file = stdout;
+    
+    gss_ctx_id_t gss_context = GSS_C_NO_CONTEXT;
+    int s;
+    OM_uint32 ret_flags;
+
+    /* Open connection */
+    if ((s = connect_to_server(context->tcp.host, context->tcp.port - 1000)) < 0)
+        return -1;
+
+    if (client_establish_context(s, service_name, gss_flags,
+                                 &gss_context, &ret_flags) < 0) {
+        (void) close(s);
+        return -1;
+    }
+
+    /* display the flags */
+    display_ctx_flags(ret_flags);
+
+    return REDIS_OK;
 }
 
 /* Connect to the server. It is possible to pass certain flags to the function:
@@ -1272,16 +1751,11 @@ static int parseOptions(int argc, char **argv) {
             config.dbnum = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--no-auth-warning")) {
             config.no_auth_warning = 1;
-        } /*else if (!strcmp(argv[i],"-a") && !lastarg) {
-            config.auth = argv[++i];*/
-
-          else if ((!strcmp(argv[i],"-a") || !strcmp(argv[i],"--pass"))
-                   && !lastarg)
-        {
+        } else if ((!strcmp(argv[i],"-a") || !strcmp(argv[i],"--pass"))
+                   && !lastarg) {
             config.auth = argv[++i];
         } else if (!strcmp(argv[i],"--user") && !lastarg) {
             config.user = argv[++i];
-
         } else if (!strcmp(argv[i],"-u") && !lastarg) {
             parseRedisUri(argv[++i]);
         } else if (!strcmp(argv[i],"--raw")) {
@@ -1789,6 +2263,8 @@ static void repl(void) {
                     linenoiseClearScreen();
                 } else {
                     long long start_time = mstime(), elapsed;
+
+                    if ((int)GSSAuth() != 0) continue;
 
                     issueCommandRepeat(argc-skipargs, argv+skipargs, repeat);
 
@@ -7062,9 +7538,7 @@ int main(int argc, char **argv) {
     config.hotkeys = 0;
     config.stdinarg = 0;
     config.auth = NULL;
-
     config.user = NULL;
-
     config.eval = NULL;
     config.eval_ldb = 0;
     config.eval_ldb_end = 0;

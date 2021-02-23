@@ -119,17 +119,13 @@ client *createClient(int fd) {
     c->argc = 0;
     c->argv = NULL;
     c->cmd = c->lastcmd = NULL;
-
     c->user = DefaultUser;
-
     c->multibulklen = 0;
     c->bulklen = -1;
     c->sentlen = 0;
     c->flags = 0;
     c->ctime = c->lastinteraction = server.unixtime;
-
     c->authenticated = (c->user->flags & USER_FLAG_NOPASS) != 0;
-
     c->replstate = REPL_STATE_NONE;
     c->repl_put_online_on_ack = 0;
     c->reploff = 0;
