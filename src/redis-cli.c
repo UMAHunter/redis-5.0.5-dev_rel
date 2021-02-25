@@ -163,8 +163,6 @@ FILE *display_file;
 gss_buffer_desc empty_token_buf = { 0, (void *) "" };
 gss_buffer_t empty_token = &empty_token_buf;
 
-void display_ctx_flags(OM_uint32 flags);
-
 /* --latency-dist palettes. */
 int spectrum_palette_color_size = 19;
 int spectrum_palette_color[] = {0,233,234,235,237,239,241,243,245,247,144,143,142,184,226,214,208,202,196};
@@ -1141,40 +1139,6 @@ client_establish_context(int s, char *service_name, OM_uint32 gss_flags,
 }
 
 /*
- * Function: display_ctx_flags
- *
- * Purpose: displays the flags returned by context initation in
- *          a human-readable form
- *
- * Arguments:
- *
- *      int             ret_flags
- *
- * Effects:
- *
- * Strings corresponding to the context flags are printed on
- * stdout, preceded by "context flag: " and followed by a newline
- */
-
-void
-display_ctx_flags(flags)
-    OM_uint32 flags;
-{
-    if (flags & GSS_C_DELEG_FLAG)
-        fprintf(display_file, "context flag: GSS_C_DELEG_FLAG\n");
-    if (flags & GSS_C_MUTUAL_FLAG)
-        fprintf(display_file, "context flag: GSS_C_MUTUAL_FLAG\n");
-    if (flags & GSS_C_REPLAY_FLAG)
-        fprintf(display_file, "context flag: GSS_C_REPLAY_FLAG\n");
-    if (flags & GSS_C_SEQUENCE_FLAG)
-        fprintf(display_file, "context flag: GSS_C_SEQUENCE_FLAG\n");
-    if (flags & GSS_C_CONF_FLAG)
-        fprintf(display_file, "context flag: GSS_C_CONF_FLAG \n");
-    if (flags & GSS_C_INTEG_FLAG)
-        fprintf(display_file, "context flag: GSS_C_INTEG_FLAG \n");
-}
-
-/*
  * Function: connect_to_server
  *
  * Purpose: Opens a TCP connection to the name host and port.
@@ -1220,9 +1184,8 @@ connect_to_server(char *host, u_short port)
     return s;
 }
 
-static char *service_name = "redis@sizu05";
+static char *service_name = "redis/sizu05";
 static OM_uint32 gss_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG;
-static OM_uint32 min_stat;
 
 static int GSSAuth() {
     display_file = stdout;
@@ -1240,9 +1203,6 @@ static int GSSAuth() {
         (void) close(s);
         return -1;
     }
-
-    /* display the flags */
-    display_ctx_flags(ret_flags);
 
     return REDIS_OK;
 }

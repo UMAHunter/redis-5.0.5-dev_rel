@@ -3912,7 +3912,7 @@ server_establish_context(int s, gss_cred_id_t server_creds,
 static int
 sign_server(int s, gss_cred_id_t server_creds, int export)
 {
-    gss_buffer_desc client_name, recv_buf, unwrap_buf, mic_buf, *msg_buf, *send_buf;
+    gss_buffer_desc client_name;
     gss_ctx_id_t context;
     OM_uint32 maj_stat, min_stat;
     OM_uint32 ret_flags;
@@ -3953,11 +3953,12 @@ worker_bee(void *param)
     /* this return value is not checked, because there's
      * not really anything to do if it fails
      */
-    if (sign_server(work->s, work->server_creds, work->export) < 0) {
-        close(work->s);
-        free(work);
-        return -1;
-    }
+    // if (sign_server(work->s, work->server_creds, work->export) < 0) {
+    //     close(work->s);
+    //     free(work);
+    //     return -1;
+    // }
+    sign_server(work->s, work->server_creds, work->export);
     close(work->s);
     free(work);
 
@@ -4038,16 +4039,22 @@ static int
 //     UNUSED(mask);
 doGSSAuth() {
     display_file = stdout;
-    char *service_name = "redis@sizu05";
+    char *service = "redis";
+    char *hostname[1024];
+    char *service_name;
     gss_cred_id_t server_creds;
     gss_OID mech = GSS_C_NO_OID;
     OM_uint32 min_stat;
     int fd;
 
-    if (krb5_gss_register_acceptor_identity("/etc/security/keytabs/redis.keytab2")) {
-            fprintf(stderr, "failed to register keytab\n");
-            return C_ERR;
+    if (krb5_gss_register_acceptor_identity("/etc/security/keytabs/redis.keytab")) {
+        fprintf(stderr, "failed to register keytab\n");
+        return C_ERR;
     }
+
+    service_name = (char *) malloc(2048);
+    gethostname(hostname, sizeof(hostname));
+    snprintf(service_name, 2048, "%s@%s", service, hostname);
 
     if (server_acquire_creds(service_name, mech, &server_creds) < 0)
         return C_ERR;
@@ -5888,12 +5895,6 @@ int main(int argc, char **argv) {
     pthread_t do_gss_pid;
     void *status;
 	pthread_create(&do_gss_pid, NULL, doGSSAuth, NULL);
-	//pthread_join(do_gss_pid, &status);
-    // if (status != 0)
-    // {
-    //     return;
-    // }
-
 
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeSetAfterSleepProc(server.el,afterSleep);
