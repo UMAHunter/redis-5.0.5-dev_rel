@@ -2542,6 +2542,8 @@ void initServerConfig(void) {
     server.always_show_logo = CONFIG_DEFAULT_ALWAYS_SHOW_LOGO;
     server.lua_time_limit = LUA_SCRIPT_TIME_LIMIT;
 
+    server.kerberos_enabled = 0;
+
     unsigned int lruclock = getLRUClock();
     atomicSet(server.lruclock,lruclock);
     resetServerSaveParams();
@@ -3714,7 +3716,7 @@ server_acquire_creds(char *service_name, gss_OID mech,
     name_buf.value = service_name;
     name_buf.length = strlen(name_buf.value) + 1;
     maj_stat = gss_import_name(&min_stat, &name_buf,
-                               GSS_C_NT_HOSTBASED_SERVICE, &server_name);
+                               GSS_KRB5_NT_PRINCIPAL_NAME, &server_name);
     if (maj_stat != GSS_S_COMPLETE) {
         display_status("importing name", maj_stat, min_stat);
         return -1;
@@ -3912,10 +3914,13 @@ server_establish_context(int s, gss_cred_id_t server_creds,
 static int
 sign_server(int s, gss_cred_id_t server_creds, int export)
 {
-    gss_buffer_desc client_name;
+    gss_buffer_desc client_name, recv_buf, unwrap_buf, mic_buf, *msg_buf, *send_buf;
     gss_ctx_id_t context;
     OM_uint32 maj_stat, min_stat;
+    int conf_state;
     OM_uint32 ret_flags;
+    int token_flags;
+    int send_flags;
 
     /* Establish a context with the client */
     if (server_establish_context(s, server_creds, &context,
@@ -3927,8 +3932,96 @@ sign_server(int s, gss_cred_id_t server_creds, int export)
     } else {
         printf("Accepted connection: \"%.*s\"\n",
                (int) client_name.length, (char *) client_name.value);
-        (void) gss_release_buffer(&min_stat, &client_name);
+        //(void) gss_release_buffer(&min_stat, &client_name);
     }
+
+    do {
+        /* Receive the message token */
+        if (recv_token(s, &token_flags, &recv_buf) < 0)
+            return (-1);
+
+        if (token_flags & TOKEN_NOOP) {
+            if (recv_buf.value) {
+                free(recv_buf.value);
+                recv_buf.value = 0;
+            }
+            break;
+        }
+
+        if ((context == GSS_C_NO_CONTEXT) &&
+            (token_flags & (TOKEN_WRAPPED | TOKEN_ENCRYPTED | TOKEN_SEND_MIC)))
+        {
+            if (recv_buf.value) {
+                free(recv_buf.value);
+                recv_buf.value = 0;
+            }
+            return (-1);
+        }
+
+        if (token_flags & TOKEN_WRAPPED) {
+            maj_stat = gss_unwrap(&min_stat, context, &recv_buf, &unwrap_buf,
+                                  &conf_state, (gss_qop_t *) NULL);
+            if (maj_stat != GSS_S_COMPLETE) {
+                display_status("unsealing message", maj_stat, min_stat);
+                if (recv_buf.value) {
+                    free(recv_buf.value);
+                    recv_buf.value = 0;
+                }
+                return (-1);
+            } else if (!conf_state && (token_flags & TOKEN_ENCRYPTED)) {
+                fprintf(stderr, "Warning!  Message not encrypted.\n");
+            }
+
+            if (recv_buf.value) {
+                free(recv_buf.value);
+                recv_buf.value = 0;
+            }
+            msg_buf = &unwrap_buf;
+        } else {
+            unwrap_buf.value = NULL;
+            unwrap_buf.length = 0;
+            msg_buf = &recv_buf;
+        }
+
+        if (token_flags & TOKEN_SEND_MIC) {
+            /* Produce a signature block for the message */
+            maj_stat = gss_get_mic(&min_stat, context, GSS_C_QOP_DEFAULT,
+                                   msg_buf, &mic_buf);
+            if (maj_stat != GSS_S_COMPLETE) {
+                display_status("signing message", maj_stat, min_stat);
+                return (-1);
+            }
+            send_flags = TOKEN_MIC;
+            send_buf = &mic_buf;
+        } else {
+            mic_buf.value = NULL;
+            mic_buf.length = 0;
+            send_flags = TOKEN_NOOP;
+            send_buf = empty_token;
+        }
+        if (recv_buf.value) {
+            free(recv_buf.value);
+            recv_buf.value = NULL;
+        }
+        if (unwrap_buf.value) {
+            gss_release_buffer(&min_stat, &unwrap_buf);
+        }
+
+        char *service = client_name.value;
+        const char delim[2] = "@";
+        char *token = strtok(service, delim);
+        send_buf->value = (strcmp(token, "redis")) ? "error": "ok";
+        send_buf->length = sizeof(send_buf->value);
+
+        /* Send the signature block or NOOP to the client */
+        if (send_token(s, send_flags, send_buf) < 0)
+            return (-1);
+
+        if (mic_buf.value) {
+            gss_release_buffer(&min_stat, &mic_buf);
+        }
+        (void) gss_release_buffer(&min_stat, &client_name);
+    } while (1 /* loop will break if NOOP received */ );
 
     if (context != GSS_C_NO_CONTEXT) {
         /* Delete context */
@@ -4033,16 +4126,10 @@ create_socket(u_short port)
 }
 
 static int
-// doGSSAuth(aeEventLoop *el, int fd, void *privdata, int mask) {
-//     UNUSED(el);
-//     UNUSED(privdata);
-//     UNUSED(mask);
 doGSSAuth() {
     display_file = stdout;
-    char *service = "redis";
-    char *hostname[1024];
-    char *service_name;
-    gss_cred_id_t server_creds;
+    char *service_name = "redis";
+    gss_cred_id_t server_creds = GSS_C_NO_CREDENTIAL;
     gss_OID mech = GSS_C_NO_OID;
     OM_uint32 min_stat;
     int fd;
@@ -4051,10 +4138,6 @@ doGSSAuth() {
         fprintf(stderr, "failed to register keytab\n");
         return C_ERR;
     }
-
-    service_name = (char *) malloc(2048);
-    gethostname(hostname, sizeof(hostname));
-    snprintf(service_name, 2048, "%s@%s", service, hostname);
 
     if (server_acquire_creds(service_name, mech, &server_creds) < 0)
         return C_ERR;
@@ -5892,9 +5975,11 @@ int main(int argc, char **argv) {
         serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
 
-    pthread_t do_gss_pid;
-    void *status;
-	pthread_create(&do_gss_pid, NULL, doGSSAuth, NULL);
+    if (server.kerberos_enabled) {
+        pthread_t do_gss_pid;
+        void *status;
+        pthread_create(&do_gss_pid, NULL, doGSSAuth, NULL);
+    }
 
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeSetAfterSleepProc(server.el,afterSleep);

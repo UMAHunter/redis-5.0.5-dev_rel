@@ -50,6 +50,7 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <gssapi/gssapi.h>
+#include <gssapi/gssapi_krb5.h>
 
 #include <hiredis.h>
 #include <sds.h> /* use sds.h from hiredis, so that only one set of sds functions will be present in the binary */
@@ -1058,7 +1059,7 @@ client_establish_context(int s, char *service_name, OM_uint32 gss_flags,
     send_tok.value = service_name;
     send_tok.length = strlen(service_name);
     maj_stat = gss_import_name(&min_stat, &send_tok,
-                                GSS_C_NT_HOSTBASED_SERVICE,
+                                GSS_KRB5_NT_PRINCIPAL_NAME,
                                 &target_name);
     if (maj_stat != GSS_S_COMPLETE) {
         display_status("parsing name", maj_stat, min_stat);
@@ -1184,8 +1185,9 @@ connect_to_server(char *host, u_short port)
     return s;
 }
 
-static char *service_name = "redis/sizu05";
+static char *service_name = "redis";
 static OM_uint32 gss_flags = GSS_C_MUTUAL_FLAG | GSS_C_REPLAY_FLAG;
+static OM_uint32 min_stat;
 
 static int GSSAuth() {
     display_file = stdout;
@@ -1193,6 +1195,8 @@ static int GSSAuth() {
     gss_ctx_id_t gss_context = GSS_C_NO_CONTEXT;
     int s;
     OM_uint32 ret_flags;
+    gss_buffer_desc in_buf, out_buf;
+    int token_flags;
 
     /* Open connection */
     if ((s = connect_to_server(context->tcp.host, context->tcp.port - 1000)) < 0)
@@ -1204,6 +1208,37 @@ static int GSSAuth() {
         return -1;
     }
 
+    in_buf.value = "ping";
+    in_buf.length = strlen((char *)in_buf.value);
+
+    out_buf = in_buf;
+
+    /* Send to server */
+    if (send_token(s, 0, &out_buf) < 0) {
+        (void) close(s);
+        (void) gss_delete_sec_context(&min_stat, &gss_context,
+                                        GSS_C_NO_BUFFER);
+        return -1;
+    }
+    if (out_buf.value != in_buf.value)
+        (void) gss_release_buffer(&min_stat, &out_buf);
+
+    /* Read signature block into out_buf */
+    if (recv_token(s, &token_flags, &out_buf) < 0) {
+        (void) close(s);
+        (void) gss_delete_sec_context(&min_stat, &gss_context,
+                                        GSS_C_NO_BUFFER);
+        return -1;
+    }
+    
+    if (strcmp("ok", out_buf.value))
+    {
+        printf("Ticket isn't for us.\n");
+        return REDIS_ERR;
+    }
+    
+    free(out_buf.value);
+    (void) close(s);
     return REDIS_OK;
 }
 
@@ -1958,7 +1993,9 @@ static void usage(void) {
 "                     --csv is specified, or if you redirect the output to a non\n"
 "                     TTY, it samples the latency for 1 second (you can use\n"
 "                     -i to change the interval), then produces a single output\n"
-"                     and exits.\n"
+"                     and exits.\n",version);
+
+    fprintf(stderr,
 "  --latency-history  Like --latency but tracking latency changes over time.\n"
 "                     Default time interval is 15 sec. Change it using -i.\n"
 "  --latency-dist     Shows latency as a spectrum, requires xterm 256 colors.\n"
@@ -1969,7 +2006,9 @@ static void usage(void) {
 "  --pipe             Transfer raw Redis protocol from stdin to server.\n"
 "  --pipe-timeout <n> In --pipe mode, abort with error if after sending all data.\n"
 "                     no reply is received within <n> seconds.\n"
-"                     Default timeout: %d. Use 0 to wait forever.\n"
+"                     Default timeout: %d. Use 0 to wait forever.\n",
+    REDIS_CLI_DEFAULT_PIPE_TIMEOUT);
+    fprintf(stderr,
 "  --bigkeys          Sample Redis keys looking for keys with many elements (complexity).\n"
 "  --memkeys          Sample Redis keys looking for keys consuming a lot of memory.\n"
 "  --memkeys-samples <n> Sample Redis keys looking for keys consuming a lot of memory.\n"
@@ -1992,8 +2031,7 @@ static void usage(void) {
 "                     line interface.\n"
 "  --help             Output this help and exit.\n"
 "  --version          Output version and exit.\n"
-"\n",
-    version, REDIS_CLI_DEFAULT_PIPE_TIMEOUT);
+"\n");
     /* Using another fprintf call to avoid -Woverlength-strings compile warning */
     fprintf(stderr,
 "Cluster Manager Commands:\n"
