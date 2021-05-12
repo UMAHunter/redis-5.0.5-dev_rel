@@ -56,6 +56,86 @@
 #include <locale.h>
 #include <sys/socket.h>
 
+#include <pthread.h>
+#include <com_err.h>
+#include <gssapi/gssapi.h>
+#include <gssapi/gssapi_krb5.h>
+
+/* Token types */
+#define TOKEN_NOOP              (1<<0)
+#define TOKEN_CONTEXT           (1<<1)
+#define TOKEN_DATA              (1<<2)
+#define TOKEN_MIC               (1<<3)
+
+/* Token flags */
+#define TOKEN_CONTEXT_NEXT      (1<<4)
+#define TOKEN_WRAPPED           (1<<5)
+#define TOKEN_ENCRYPTED         (1<<6)
+#define TOKEN_SEND_MIC          (1<<7)
+
+#define GSS_KRB5_REGISTER_ACCEPTOR_IDENTITY_OID_LENGTH 11
+#define GSS_KRB5_REGISTER_ACCEPTOR_IDENTITY_OID "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x05\x09"
+
+#define GSS_MECH_KRB5_OID_LENGTH 9
+#define GSS_MECH_KRB5_OID "\052\206\110\206\367\022\001\002\002"
+
+#define GSS_MECH_KRB5_OLD_OID_LENGTH 5
+#define GSS_MECH_KRB5_OLD_OID "\053\005\001\005\002"
+
+/* Incorrect krb5 mech OID emitted by MS. */
+#define GSS_MECH_KRB5_WRONG_OID_LENGTH 9
+#define GSS_MECH_KRB5_WRONG_OID "\052\206\110\202\367\022\001\002\002"
+
+/* IAKERB variant */
+#define GSS_MECH_IAKERB_OID_LENGTH 6
+#define GSS_MECH_IAKERB_OID "\053\006\001\005\002\005"
+
+#define NO_CI_FLAGS_X_OID_LENGTH 6
+#define NO_CI_FLAGS_X_OID "\x2a\x85\x70\x2b\x0d\x1d"
+
+const gss_OID_desc krb5_gss_oid_array[] = {
+    /* this is the official, rfc-specified OID */
+    {GSS_MECH_KRB5_OID_LENGTH, GSS_MECH_KRB5_OID},
+    /* this pre-RFC mech OID */
+    {GSS_MECH_KRB5_OLD_OID_LENGTH, GSS_MECH_KRB5_OLD_OID},
+    /* this is the unofficial, incorrect mech OID emitted by MS */
+    {GSS_MECH_KRB5_WRONG_OID_LENGTH, GSS_MECH_KRB5_WRONG_OID},
+    /* IAKERB OID */
+    {GSS_MECH_IAKERB_OID_LENGTH, GSS_MECH_IAKERB_OID},
+    /* this is the v2 assigned OID */
+    {9, "\052\206\110\206\367\022\001\002\003"},
+    /* these two are name type OID's */
+    /* 2.1.1. Kerberos Principal Name Form:  (rfc 1964)
+     * This name form shall be represented by the Object Identifier {iso(1)
+     * member-body(2) United States(840) mit(113554) infosys(1) gssapi(2)
+     * krb5(2) krb5_name(1)}.  The recommended symbolic name for this type
+     * is "GSS_KRB5_NT_PRINCIPAL_NAME". */
+    {10, "\052\206\110\206\367\022\001\002\002\001"},
+    /* gss_nt_krb5_principal.  Object identifier for a krb5_principal. Do not use. */
+    {10, "\052\206\110\206\367\022\001\002\002\002"},
+    {NO_CI_FLAGS_X_OID_LENGTH, NO_CI_FLAGS_X_OID},
+    { 0, 0 }
+};
+
+#define kg_oids ((gss_OID)krb5_gss_oid_array)
+
+const gss_OID gss_mech_krb5 = &kg_oids[0];
+
+FILE *display_file;
+
+gss_buffer_desc empty_token_buf = { 0, (void *) "" };
+gss_buffer_t empty_token = &empty_token_buf;
+
+struct _work_plan
+{
+    int s;
+    gss_cred_id_t server_creds;
+    int export;
+};
+
+static void display_status_1(char *m, OM_uint32 code, int type);
+
+
 /* Our shared "common" objects */
 
 struct sharedObjectsStruct shared;
@@ -341,7 +421,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,1,1,1,0,0,0},
 
     /* Note that we can't flag set as fast, since it may perform an
- *      * implicit DEL of a large key. */
+     * implicit DEL of a large key. */
     {"set",setCommand,-3,
      "write use-memory @string",
      0,NULL,1,1,1,0,0,0},
@@ -743,7 +823,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,1,1,1,0,0,0},
 
     /* Like for SET, we can't mark rename as a fast command because
- *      * overwriting the target key may result in an implicit slow DEL. */
+     * overwriting the target key may result in an implicit slow DEL. */
     {"rename",renameCommand,3,
      "write @keyspace",
      0,NULL,1,2,1,0,0,0},
@@ -980,7 +1060,7 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,0,0,0,0,0,0},*/
 
     /* EVAL can modify the dataset, however it is not flagged as a write
- *      * command since we do the check while running commands from Lua. */
+     * command since we do the check while running commands from Lua. */
     {"eval",evalCommand,-3,
      "no-script @scripting",
      0,evalGetKeys,0,0,0,0,0,0},
@@ -1063,9 +1143,9 @@ struct redisCommand redisCommandTable[] = {
      0,NULL,1,1,1,0,0,0},
 
     /* Technically speaking PFCOUNT may change the key since it changes the
- *      * final bytes in the HyperLogLog representation. However in this case
- *           * we claim that the representation, even if accessible, is an internal
- *                * affair, and the command is semantically read only. */
+    * final bytes in the HyperLogLog representation. However in this case
+    * we claim that the representation, even if accessible, is an internal
+    * affair, and the command is semantically read only. */
     {"pfcount",pfcountCommand,-2,
      "read-only @hyperloglog",
      0,NULL,1,-1,1,0,0,0},
@@ -2415,10 +2495,7 @@ void initServerConfig(void) {
     server.pidfile = NULL;
     server.rdb_filename = zstrdup(CONFIG_DEFAULT_RDB_FILENAME);
     server.aof_filename = zstrdup(CONFIG_DEFAULT_AOF_FILENAME);
-
-    //server.requirepass = NULL;
     server.acl_filename = zstrdup(CONFIG_DEFAULT_ACL_FILENAME);
-
     server.rdb_compression = CONFIG_DEFAULT_RDB_COMPRESSION;
     server.rdb_checksum = CONFIG_DEFAULT_RDB_CHECKSUM;
     server.stop_writes_on_bgsave_err = CONFIG_DEFAULT_STOP_WRITES_ON_BGSAVE_ERROR;
@@ -3010,10 +3087,6 @@ void initServer(void) {
     scriptingInit(1);
     slowlogInit();
     latencyMonitorInit();
-
-    /*bioInit();
-    server.initial_memory_usage = zmalloc_used_memory();*/
-
     }
 
 /* Some steps in server initialization need to be done last (after modules
@@ -3292,6 +3365,733 @@ void preventCommandReplication(client *c) {
     c->flags |= CLIENT_PREVENT_REPL_PROP;
 }
 
+
+
+static int
+write_all(int fildes, const void *data, unsigned int nbyte)
+{
+    int ret;
+    const char *ptr, *buf = data;
+
+    for (ptr = buf; nbyte; ptr += ret, nbyte -= ret) {
+        ret = send(fildes, ptr, nbyte, 0);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return (ret);
+        } else if (ret == 0) {
+            return (ptr - buf);
+        }
+    }
+
+    return (ptr - buf);
+}
+
+static int
+read_all(int fildes, void *data, unsigned int nbyte)
+{
+    int     ret;
+    char   *ptr, *buf = data;
+    fd_set  rfds;
+    struct timeval tv;
+
+    FD_ZERO(&rfds);
+    FD_SET(fildes, &rfds);
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+
+    for (ptr = buf; nbyte; ptr += ret, nbyte -= ret) {
+        if (select(FD_SETSIZE, &rfds, NULL, NULL, &tv) <= 0
+            || !FD_ISSET(fildes, &rfds))
+            return (ptr - buf);
+        ret = recv(fildes, ptr, nbyte, 0);
+        if (ret < 0) {
+            if (errno == EINTR)
+                continue;
+            return (ret);
+        } else if (ret == 0) {
+            return (ptr - buf);
+        }
+    }
+
+    return (ptr - buf);
+}
+
+/*
+ * Helper to send a token on the specified file descriptor.
+ *
+ * If errors are encountered, this routine must not directly cause
+ * termination of the process because compliant GSS applications
+ * must release resources allocated by the GSS library before
+ * exiting.
+ *
+ * Returns 0 on success, nonzero on failure.
+ */
+static int
+send_token(int fd, int flags, gss_buffer_t token)
+{
+    /*
+     * Supply token framing and transmission code here.
+     *
+     * It is advisable for the application protocol to specify the
+     * length of the token being transmitted unless the underlying
+     * transit does so implicitly.
+     *
+     * In addition to checking for error returns from whichever
+     * syscall(s) are used to send data, applications should have
+     * a loop to handle EINTR returns.
+     */
+    int     ret;
+    unsigned char char_flags = (unsigned char) flags;
+    unsigned char lenbuf[4];
+
+    if (char_flags) {
+        ret = write_all(fd, (char *) &char_flags, 1);
+        if (ret != 1) {
+            perror("sending token flags");
+            return -1;
+        }
+    }
+    if (token->length > 0xffffffffUL)
+        abort();
+    lenbuf[0] = (token->length >> 24) & 0xff;
+    lenbuf[1] = (token->length >> 16) & 0xff;
+    lenbuf[2] = (token->length >> 8) & 0xff;
+    lenbuf[3] = token->length & 0xff;
+
+    ret = write_all(fd, lenbuf, 4);
+    if (ret < 0) {
+        perror("sending token length");
+        return -1;
+    } else if (ret != 4) {
+        if (display_file) {
+            fprintf(display_file,
+                    "sending token length: %d of %d bytes written\n", ret, 4);
+        }
+        return -1;
+    }
+
+    ret = write_all(fd, token->value, token->length);
+    if (ret < 0) {
+        perror("sending token data");
+        return -1;
+    } else if ((size_t)ret != token->length) {
+        if (display_file) {
+            fprintf(display_file,
+                    "sending token data: %d of %d bytes written\n",
+                    ret, (int)token->length);
+        }
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Function: recv_token
+ *
+ * Purpose: Reads a token from a file descriptor.
+ *
+ * Arguments:
+ *
+ *      s               (r) an open file descriptor
+ *      flags           (w) the read flags
+ *      tok             (w) the read token
+ *
+ * Returns: 0 on success, -1 on failure
+ *
+ * Effects:
+ *
+ * recv_token reads the token flags (a single byte, even though
+ * they're stored into an integer, then reads the token length (as a
+ * network long), allocates memory to hold the data, and then reads
+ * the token data from the file descriptor s.  It blocks to read the
+ * length and data, if necessary.  On a successful return, the token
+ * should be freed with gss_release_buffer.  It returns 0 on success,
+ * and -1 if an error occurs or if it could not read all the data.
+ */
+int
+recv_token(int s, int *flags, gss_buffer_t tok)
+{
+    int ret;
+    unsigned char char_flags;
+    unsigned char lenbuf[4];
+
+    ret = read_all(s, (char *)&char_flags, 1);
+    if (ret < 0) {
+        perror("reading token flags");
+        return -1;
+    } else if (!ret) {
+        if (display_file)
+            fputs("reading token flags: 0 bytes read\n", display_file);
+        return -1;
+    } else {
+        *flags = (int) char_flags;
+    }
+
+    if (char_flags == 0) {
+        lenbuf[0] = 0;
+        ret = read_all(s, (char *)&lenbuf[1], 3);
+        if (ret < 0) {
+            perror("reading token length");
+            return -1;
+        } else if (ret != 3) {
+            if (display_file) {
+                fprintf(display_file,
+                        "reading token length: %d of %d bytes read\n", ret, 3);
+            }
+            return -1;
+        }
+    } else {
+        ret = read_all(s, (char *)lenbuf, 4);
+        if (ret < 0) {
+            perror("reading token length");
+            return -1;
+        } else if (ret != 4) {
+            if (display_file) {
+                fprintf(display_file,
+                        "reading token length: %d of %d bytes read\n", ret, 4);
+            }
+            return -1;
+        }
+    }
+
+    tok->length = ((lenbuf[0] << 24)
+                   | (lenbuf[1] << 16)
+                   | (lenbuf[2] << 8)
+                   | lenbuf[3]);
+    tok->value = malloc(tok->length ? tok->length : 1);
+    if (tok->length && tok->value == NULL) {
+        if (display_file)
+            fprintf(display_file, "Out of memory allocating token data\n");
+        return -1;
+    }
+
+    ret = read_all(s, (char *)tok->value, tok->length);
+    if (ret < 0) {
+        perror("reading token data");
+        free(tok->value);
+        return -1;
+    } else if ((size_t)ret != tok->length) {
+        fprintf(stderr, "sending token data: %d of %d bytes written\n",
+                ret, (int)tok->length);
+        free(tok->value);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void
+display_status_1(char *m, OM_uint32 code, int type)
+{
+    OM_uint32 min_stat;
+    gss_buffer_desc msg;
+    OM_uint32 msg_ctx;
+
+    msg_ctx = 0;
+    while (1) {
+        (void)gss_display_status(&min_stat, code, type, GSS_C_NULL_OID,
+                                 &msg_ctx, &msg);
+        if (display_file) {
+            fprintf(display_file, "GSS-API error %s: %s\n", m,
+                    (char *)msg.value);
+        }
+        (void)gss_release_buffer(&min_stat, &msg);
+
+        if (!msg_ctx)
+            break;
+    }
+}
+
+/*
+ * Function: display_status
+ *
+ * Purpose: displays GSS-API messages
+ *
+ * Arguments:
+ *
+ *      msg             a string to be displayed with the message
+ *      maj_stat        the GSS-API major status code
+ *      min_stat        the GSS-API minor status code
+ *
+ * Effects:
+ *
+ * The GSS-API messages associated with maj_stat and min_stat are
+ * displayed on stderr, each preceeded by "GSS-API error <msg>: " and
+ * followed by a newline.
+ */
+void
+display_status(char *msg, OM_uint32 maj_stat, OM_uint32 min_stat)
+{
+    display_status_1(msg, maj_stat, GSS_C_GSS_CODE);
+    display_status_1(msg, min_stat, GSS_C_MECH_CODE);
+}
+
+/*
+ * Function: display_ctx_flags
+ *
+ * Purpose: displays the flags returned by context initation in
+ *          a human-readable form
+ *
+ * Arguments:
+ *
+ *      int             ret_flags
+ *
+ * Effects:
+ *
+ * Strings corresponding to the context flags are printed on
+ * stdout, preceded by "context flag: " and followed by a newline
+ */
+
+void
+display_ctx_flags(OM_uint32 flags)
+{
+    if (flags & GSS_C_DELEG_FLAG)
+        fprintf(display_file, "context flag: GSS_C_DELEG_FLAG\n");
+    if (flags & GSS_C_MUTUAL_FLAG)
+        fprintf(display_file, "context flag: GSS_C_MUTUAL_FLAG\n");
+    if (flags & GSS_C_REPLAY_FLAG)
+        fprintf(display_file, "context flag: GSS_C_REPLAY_FLAG\n");
+    if (flags & GSS_C_SEQUENCE_FLAG)
+        fprintf(display_file, "context flag: GSS_C_SEQUENCE_FLAG\n");
+    if (flags & GSS_C_CONF_FLAG)
+        fprintf(display_file, "context flag: GSS_C_CONF_FLAG \n");
+    if (flags & GSS_C_INTEG_FLAG)
+        fprintf(display_file, "context flag: GSS_C_INTEG_FLAG \n");
+}
+
+void
+print_token(gss_buffer_t tok)
+{
+    size_t i;
+    unsigned char *p = tok->value;
+
+    if (!display_file)
+        return;
+    for (i = 0; i < tok->length; i++, p++) {
+        fprintf(display_file, "%02x ", *p);
+        if (i % 16 == 15) {
+            fprintf(display_file, "\n");
+        }
+    }
+    fprintf(display_file, "\n");
+    fflush(display_file);
+}
+
+/*
+ * Function: server_acquire_creds
+ *
+ * Purpose: imports a service name and acquires credentials for it
+ *
+ * Arguments:
+ *
+ *      service_name    (r) the ASCII service name
+ *      mech            (r) the desired mechanism (or GSS_C_NO_OID)
+ *      server_creds    (w) the GSS-API service credentials
+ *
+ * Returns: 0 on success, -1 on failure
+ *
+ * Effects:
+ *
+ * The service name is imported with gss_import_name, and service
+ * credentials are acquired with gss_acquire_cred.  If either opertion
+ * fails, an error message is displayed and -1 is returned; otherwise,
+ * 0 is returned.  If mech is given, credentials are acquired for the
+ * specified mechanism.
+ */
+
+static int
+server_acquire_creds(char *service_name, gss_OID mech,
+                     gss_cred_id_t *server_creds)
+{
+    gss_buffer_desc name_buf;
+    gss_name_t server_name;
+    OM_uint32 maj_stat, min_stat;
+    gss_OID_set_desc mechlist;
+    gss_OID_set mechs = GSS_C_NO_OID_SET;
+
+    name_buf.value = service_name;
+    name_buf.length = strlen(name_buf.value) + 1;
+    maj_stat = gss_import_name(&min_stat, &name_buf,
+                               GSS_C_NT_HOSTBASED_SERVICE, &server_name);
+    if (maj_stat != GSS_S_COMPLETE) {
+        display_status("importing name", maj_stat, min_stat);
+        return -1;
+    }
+
+    if (mech != GSS_C_NO_OID) {
+        mechlist.count = 1;
+        mechlist.elements = mech;
+        mechs = &mechlist;
+    }
+    maj_stat = gss_acquire_cred(&min_stat, server_name, 0, mechs, GSS_C_ACCEPT,
+                                server_creds, NULL, NULL);
+    if (maj_stat != GSS_S_COMPLETE) {
+        display_status("acquiring credentials", maj_stat, min_stat);
+        return -1;
+    }
+
+    (void) gss_release_name(&min_stat, &server_name);
+
+    return 0;
+}
+
+/*
+ * Function: server_establish_context
+ *
+ * Purpose: establishses a GSS-API context as a specified service with
+ * an incoming client, and returns the context handle and associated
+ * client name
+ *
+ * Arguments:
+ *
+ *      s               (r) an established TCP connection to the client
+ *      service_creds   (r) server credentials, from gss_acquire_cred
+ *      context         (w) the established GSS-API context
+ *      client_name     (w) the client's ASCII name
+ *
+ * Returns: 0 on success, -1 on failure
+ *
+ * Effects:
+ *
+ * Any valid client request is accepted.  If a context is established,
+ * its handle is returned in context and the client name is returned
+ * in client_name and 0 is returned.  If unsuccessful, an error
+ * message is displayed and -1 is returned.
+ */
+static int
+server_establish_context(int s, gss_cred_id_t server_creds,
+                         gss_ctx_id_t *context, gss_buffer_t client_name,
+                         OM_uint32 *ret_flags)
+{
+    gss_buffer_desc send_tok, recv_tok;
+    gss_name_t client;
+    gss_OID doid;
+    OM_uint32 maj_stat, min_stat, acc_sec_min_stat;
+    gss_buffer_desc oid_name;
+    int     token_flags;
+
+    if (recv_token(s, &token_flags, &recv_tok) < 0)
+        return -1;
+
+    if (recv_tok.value) {
+        free(recv_tok.value);
+        recv_tok.value = NULL;
+    }
+
+    if (!(token_flags & TOKEN_NOOP)) {
+        if (display_file)
+            fprintf(display_file, "Expected NOOP token, got %d token instead\n",
+                    token_flags);
+        return -1;
+    }
+
+    *context = GSS_C_NO_CONTEXT;
+
+    if (token_flags & TOKEN_CONTEXT_NEXT) {
+        do {
+            if (recv_token(s, &token_flags, &recv_tok) < 0)
+                return -1;
+
+            if (display_file) {
+                fprintf(display_file, "Received token (size=%d): \n",
+                        (int) recv_tok.length);
+                print_token(&recv_tok);
+            }
+
+            maj_stat = gss_accept_sec_context(&acc_sec_min_stat, context,
+                                              server_creds, &recv_tok,
+                                              GSS_C_NO_CHANNEL_BINDINGS,
+                                              &client, &doid, &send_tok,
+                                              ret_flags,
+                                              NULL,  /* time_rec */
+                                              NULL); /* del_cred_handle */
+
+            if (recv_tok.value) {
+                free(recv_tok.value);
+                recv_tok.value = NULL;
+            }
+
+            if (send_tok.length != 0) {
+                if (display_file) {
+                    fprintf(display_file,
+                            "Sending accept_sec_context token (size=%d):\n",
+                            (int) send_tok.length);
+                    print_token(&send_tok);
+                }
+                if (send_token(s, TOKEN_CONTEXT, &send_tok) < 0) {
+                    if (display_file)
+                        fprintf(display_file, "failure sending token\n");
+                    return -1;
+                }
+
+                (void) gss_release_buffer(&min_stat, &send_tok);
+            }
+            if (maj_stat != GSS_S_COMPLETE
+                && maj_stat != GSS_S_CONTINUE_NEEDED) {
+                display_status("accepting context", maj_stat,
+                               acc_sec_min_stat);
+                if (*context != GSS_C_NO_CONTEXT)
+                    gss_delete_sec_context(&min_stat, context,
+                                           GSS_C_NO_BUFFER);
+                return -1;
+            }
+
+            if (display_file) {
+                if (maj_stat == GSS_S_CONTINUE_NEEDED)
+                    fprintf(display_file, "continue needed...\n");
+                else
+                    fprintf(display_file, "\n");
+                fflush(display_file);
+            }
+        } while (maj_stat == GSS_S_CONTINUE_NEEDED);
+
+        /* display the flags */
+        display_ctx_flags(*ret_flags);
+
+        if (display_file) {
+            maj_stat = gss_oid_to_str(&min_stat, doid, &oid_name);
+            if (maj_stat != GSS_S_COMPLETE) {
+                display_status("converting oid->string", maj_stat, min_stat);
+                return -1;
+            }
+            fprintf(display_file, "Accepted connection using mechanism OID %.*s.\n",
+                    (int) oid_name.length, (char *) oid_name.value);
+            (void) gss_release_buffer(&min_stat, &oid_name);
+        }
+
+        maj_stat = gss_display_name(&min_stat, client, client_name, &doid);
+        if (maj_stat != GSS_S_COMPLETE) {
+            display_status("displaying name", maj_stat, min_stat);
+            return -1;
+        }
+        //enumerateAttributes(&min_stat, client, 1);
+        //showLocalIdentity(&min_stat, client);
+        maj_stat = gss_release_name(&min_stat, &client);
+        if (maj_stat != GSS_S_COMPLETE) {
+            display_status("releasing name", maj_stat, min_stat);
+            return -1;
+        }
+    } else {
+        client_name->length = *ret_flags = 0;
+
+        if (display_file)
+            fprintf(display_file, "Accepted unauthenticated connection.\n");
+    }
+
+    return 0;
+}
+
+/*
+ * Function: sign_server
+ *
+ * Purpose: Performs the "sign" service.
+ *
+ * Arguments:
+ *
+ *      s               (r) a TCP socket on which a connection has been
+ *                      accept()ed
+ *      service_name    (r) the ASCII name of the GSS-API service to
+ *                      establish a context as
+ *      export          (r) whether to test context exporting
+ *
+ * Returns: -1 on error
+ *
+ * Effects:
+ *
+ * sign_server establishes a context, and performs a single sign request.
+ *
+ * A sign request is a single GSS-API sealed token.  The token is
+ * unsealed and a signature block, produced with gss_sign, is returned
+ * to the sender.  The context is the destroyed and the connection
+ * closed.
+ *
+ * If any error occurs, -1 is returned.
+ */
+static int
+sign_server(int s, gss_cred_id_t server_creds, int export)
+{
+    gss_buffer_desc client_name;
+    gss_ctx_id_t context;
+    OM_uint32 maj_stat, min_stat;
+    OM_uint32 ret_flags;
+
+    /* Establish a context with the client */
+    if (server_establish_context(s, server_creds, &context,
+                                 &client_name, &ret_flags) < 0)
+        return (-1);
+
+    if (context == GSS_C_NO_CONTEXT) {
+        printf("Accepted unauthenticated connection.\n");
+    } else {
+        printf("Accepted connection: \"%.*s\"\n",
+               (int) client_name.length, (char *) client_name.value);
+        (void) gss_release_buffer(&min_stat, &client_name);
+    }
+
+    if (context != GSS_C_NO_CONTEXT) {
+        /* Delete context */
+        maj_stat = gss_delete_sec_context(&min_stat, &context, NULL);
+        if (maj_stat != GSS_S_COMPLETE) {
+            display_status("deleting context", maj_stat, min_stat);
+            return (-1);
+        }
+    }
+
+    if (display_file)
+        fflush(display_file);
+
+    return (0);
+}
+
+static int
+worker_bee(void *param)
+{
+    struct _work_plan *work = (struct _work_plan *) param;
+
+    /* this return value is not checked, because there's
+     * not really anything to do if it fails
+     */
+    // if (sign_server(work->s, work->server_creds, work->export) < 0) {
+    //     close(work->s);
+    //     free(work);
+    //     return -1;
+    // }
+    sign_server(work->s, work->server_creds, work->export);
+    close(work->s);
+    free(work);
+
+    return 0;
+}
+
+OM_uint32 KRB5_CALLCONV
+krb5_gss_register_acceptor_identity(const char *keytab)
+{
+    static const gss_OID_desc req_oid = {
+        GSS_KRB5_REGISTER_ACCEPTOR_IDENTITY_OID_LENGTH,
+        GSS_KRB5_REGISTER_ACCEPTOR_IDENTITY_OID };
+    OM_uint32 major_status;
+    OM_uint32 minor_status;
+    gss_buffer_desc req_buffer;
+
+    req_buffer.length = (keytab == NULL) ? 0 : strlen(keytab);
+    req_buffer.value = (char *)keytab;
+
+    major_status = gssspi_mech_invoke(&minor_status,
+                                      (gss_OID)gss_mech_krb5,
+                                      (gss_OID)&req_oid,
+                                      &req_buffer);
+
+    return major_status;
+}
+
+/*
+ * Function: create_socket
+ *
+ * Purpose: Opens a listening TCP socket.
+ *
+ * Arguments:
+ *
+ *      port            (r) the port number on which to listen
+ *
+ * Returns: the listening socket file descriptor, or -1 on failure
+ *
+ * Effects:
+ *
+ * A listening socket on the specified port and created and returned.
+ * On error, an error message is displayed and -1 is returned.
+ */
+static int
+create_socket(u_short port)
+{
+    struct sockaddr_in saddr;
+    int     s;
+    int     on = 1;
+
+    saddr.sin_family = AF_INET;
+    saddr.sin_port = htons(port);
+    saddr.sin_addr.s_addr = INADDR_ANY;
+
+    if ((s = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("creating socket");
+        return -1;
+    }
+    /* Let the socket be reused right away */
+    (void) setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
+    if (bind(s, (struct sockaddr *) &saddr, sizeof(saddr)) < 0) {
+        perror("binding socket");
+        (void) close(s);
+        return -1;
+    }
+    if (listen(s, 5) < 0) {
+        perror("listening on socket");
+        (void) close(s);
+        return -1;
+    }
+    return s;
+}
+
+static int
+// doGSSAuth(aeEventLoop *el, int fd, void *privdata, int mask) {
+//     UNUSED(el);
+//     UNUSED(privdata);
+//     UNUSED(mask);
+doGSSAuth() {
+    display_file = stdout;
+    char *service = "redis";
+    char *hostname[1024];
+    char *service_name;
+    gss_cred_id_t server_creds;
+    gss_OID mech = GSS_C_NO_OID;
+    OM_uint32 min_stat;
+    int fd;
+
+    if (krb5_gss_register_acceptor_identity("/etc/security/keytabs/redis.keytab")) {
+        fprintf(stderr, "failed to register keytab\n");
+        return C_ERR;
+    }
+
+    service_name = (char *) malloc(2048);
+    gethostname(hostname, sizeof(hostname));
+    snprintf(service_name, 2048, "%s@%s", service, hostname);
+
+    if (server_acquire_creds(service_name, mech, &server_creds) < 0)
+        return C_ERR;
+
+    if ((fd = create_socket(server.port - 1000)) >= 0) {
+        if (listen(fd, 0) < 0)
+            perror("listening on socket");
+        fprintf(stderr, "starting kerberos...\n");
+    }
+
+    do {
+        struct _work_plan *work = malloc(sizeof(struct _work_plan));
+
+        if (work == NULL) {
+            fprintf(stderr, "fatal error: out of memory");
+            return -1;
+        }
+
+        /* Accept a TCP connection */
+        if ((work->s = accept(fd, NULL, 0)) < 0) {
+            perror("accepting connection");
+            return -1;
+        }
+
+        work->server_creds = server_creds;
+        work->export = 0;
+
+        if (worker_bee((void *) work) < 0) {
+            return -1;
+        }
+    } while (1);
+    (void) gss_release_cred(&min_stat, &server_creds);
+    close(fd);
+
+    return 0;
+}
+
 /* Call() is the core of Redis execution of a command.
  *
  * The following flags can be passed:
@@ -3500,7 +4300,7 @@ int processCommand(client *c) {
         addReply(c,shared.noautherr);*/
 
     /* Check if the user is authenticated. This check is skipped in case
- *      * the default user is flagged as "nopass" and is active. */
+     * the default user is flagged as "nopass" and is active. */
     int auth_required = (!(DefaultUser->flags & USER_FLAG_NOPASS) ||
                            DefaultUser->flags & USER_FLAG_DISABLED) &&
                         !c->authenticated;
@@ -3514,7 +4314,7 @@ int processCommand(client *c) {
     }
 
     /* Check if the user can run this command according to the current
- *      * ACLs. */
+     * ACLs. */
     int acl_retval = ACLCheckCommandPerm(c);
     if (acl_retval != ACL_OK) {
         flagTransaction(c);
@@ -4602,7 +5402,7 @@ void daemonize(void) {
     setsid(); /* create a new session */
 
     /* Every output goes to /dev/null. If Redis is daemonized but
-     * the 'logfile' is set to 'stdout' in the configuration file
+     * the 'display_file' is set to 'stdout' in the configuration file
      * it will not log at all. */
     if ((fd = open("/dev/null", O_RDWR, 0)) != -1) {
         dup2(fd, STDIN_FILENO);
@@ -4942,10 +5742,8 @@ int main(int argc, char **argv) {
     dictSetHashFunctionSeed((uint8_t*)hashseed);
     server.sentinel_mode = checkForSentinelMode(argc,argv);
     initServerConfig();
-
     ACLInit(); /* The ACL subsystem must be initialized ASAP because the
                   basic networking code and client creation depends on it. */
-
     moduleInitModulesSystem();
 
     /* Store the executable path and arguments in a safe place in order
@@ -5069,10 +5867,8 @@ int main(int argc, char **argv) {
         linuxMemoryWarnings();
     #endif
         moduleLoadFromQueue();
-
         ACLLoadUsersAtStartup();
         InitServerLast();
-
         loadDataFromDisk();
         if (server.cluster_enabled) {
             if (verifyClusterConfigWithData() == C_ERR) {
@@ -5087,9 +5883,7 @@ int main(int argc, char **argv) {
         if (server.sofd > 0)
             serverLog(LL_NOTICE,"The server is now ready to accept connections at %s", server.unixsocket);
     } else {
-
         InitServerLast();
-
         sentinelIsRunning();
     }
 
@@ -5097,6 +5891,10 @@ int main(int argc, char **argv) {
     if (server.maxmemory > 0 && server.maxmemory < 1024*1024) {
         serverLog(LL_WARNING,"WARNING: You specified a maxmemory value that is less than 1MB (current value is %llu bytes). Are you sure this is what you really want?", server.maxmemory);
     }
+
+    pthread_t do_gss_pid;
+    void *status;
+	pthread_create(&do_gss_pid, NULL, doGSSAuth, NULL);
 
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeSetAfterSleepProc(server.el,afterSleep);
