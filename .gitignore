@@ -30,4 +30,3 @@ deps/lua/src/liblua.a
 Makefile.dep
 .vscode/
 redis.conf
-tests/*
